@@ -19,8 +19,8 @@ require_once __DIR__ . '/vendor/autoload.php';
 // -----------------------------------------------------------------------------
 // Create PSR Request and Response objects
 // -----------------------------------------------------------------------------
-$request = ServerRequestFactory::fromGlobals($_SERVER, $_GET, $_POST, $_COOKIE, $_FILES);
-$response = new Response();
+$request = $request ?? ServerRequestFactory::fromGlobals($_SERVER, $_GET, $_POST, $_COOKIE, $_FILES);
+$response = $response ?? new Response();
 
 // -----------------------------------------------------------------------------
 // Allow overriding the Accept header via a query parameter for ease of use
@@ -71,7 +71,7 @@ switch ($accept) {
 // -----------------------------------------------------------------------------
 // Use Pretty error pages if dev dependencies are installed
 // -----------------------------------------------------------------------------
-if (class_exists(\Whoops\Run::class)) {
+if (class_exists(\Whoops\Run::class) && ! isset($whoops)) {
     if ($outputType === 'json') {
         $handler = new \Whoops\Handler\JsonResponseHandler;
         $handler->addTraceToOutput(true);
@@ -91,8 +91,7 @@ if (class_exists(\Whoops\Run::class)) {
 // =============================================================================
 // Handle requests
 // -----------------------------------------------------------------------------
-$path = $request->getUri()->getPath();
-$target = $request->getMethod() . $path;
+$path = rtrim($request->getUri()->getPath(), '/');
 
 $context = [
     'content' => '',
@@ -101,12 +100,24 @@ $context = [
     'status' => 200,
 ];
 
-switch ($target) {
-    case 'GET/':
-    case 'GET/' . basename(__FILE__):
-        $context['content'] = 'This page is an empty example page.';
-        $context['description'] = 'Empty Example Page';
-        $context['title'] = 'Example';
+switch ($path) {
+    case '':
+    case '/' . basename(__FILE__):
+        $context['content'] = <<<'HTML'
+<ol>
+    <li><a href="/webid">WebID</a></li>
+</ol>
+HTML;
+
+        $context['description'] = 'Examples of how to call Solid Server APIs from PHP.';
+        $context['details'] = '/docs/';
+        $context['title'] = 'Solid Examples';
+    break;
+
+    case '/webid':
+    case '/01.webid':
+    case '/example.01.webid':
+        $response = require __DIR__ . '/example.01.webid.php';
     break;
 
     default:
@@ -131,64 +142,66 @@ if ($output) {
     $context['title'] = 'Unexpected Output';
 }
 
-$response = $response->withStatus($context['status']);
+if (isset($context)) {
+    $response = $response->withStatus($context['status']);
 
-switch ($outputType) {
-    case 'json':
-        try {
-            $content = json_encode($context, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
-        } catch (\JsonException $e) {
-            $template = <<<'JSON_TEMPLATE'
-        {
-            "content": "{{ content }}",
-            "description": "{{ description }}",
-            "details": "{{ details }}",
-            "status":  {{ status }},
-            "title": "{{ title }}"
-        }
-JSON_TEMPLATE;
+    switch ($outputType) {
+        case 'json':
+            try {
+                $content = json_encode($context, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            } catch (\JsonException $e) {
+                $template = <<<'JSON_TEMPLATE'
+                {
+                    "content": "{{ content }}",
+                    "description": "{{ description }}",
+                    "details": "{{ details }}",
+                    "status":  {{ status }},
+                    "title": "{{ title }}"
+                }
+    JSON_TEMPLATE;
 
-            $context = [
-                'content' => 'An error occurred while encoding the response as JSON: ' . $e->getMessage(),
-                'description' => 'JSON Encoding Error',
-                'details' => '/errors/',
-                'status' => 500,
-                'title' => 'JSON Encoding Error',
-            ];
+                $context = [
+                    'content' => 'An error occurred while encoding the response as JSON: ' . $e->getMessage(),
+                    'description' => 'JSON Encoding Error',
+                    'details' => '/errors/',
+                    'status' => 500,
+                    'title' => 'JSON Encoding Error',
+                ];
 
-            $response = $response
-                ->withHeader('Content-Type', ['application/problem+json'])
-                ->withStatus(500);
-        }
-    break;
+                $response = $response
+                    ->withHeader('Content-Type', ['application/problem+json'])
+                    ->withStatus(500);
+            }
+        break;
 
-    case 'text':
-        $template = "Status: {{ status }}\nTitle: {{ title }}\nDescription: {{ description }}\nDetails: {{ details }}\nContent:\n{{ content }}";
-    break;
+        case 'text':
+            $template = "Status: {{ status }}\nTitle: {{ title }}\nDescription: {{ description }}\nDetails: {{ details }}\nContent:\n{{ content }}";
+        break;
 
-    case 'html':
-    default:
-        $fileHandle = fopen(__FILE__, 'rb');
-        fseek($fileHandle, __COMPILER_HALT_OFFSET__);
-        $template = stream_get_contents($fileHandle);
-    break;
-}
-
-if (! isset($content)) {
-    if (isset($template)) {
-        $content = str_replace(
-            array_map(static function ($key) {
-                return '{{ ' . $key . ' }}';
-            }, array_keys($context)),
-            array_values($context),
-            $template
-        );
-    } else {
-        throw new \RuntimeException('Unable to render response, no template or content provided');
+        case 'html':
+        default:
+            $fileHandle = fopen(__FILE__, 'rb');
+            fseek($fileHandle, __COMPILER_HALT_OFFSET__);
+            $template = stream_get_contents($fileHandle);
+        break;
     }
-}
 
-$response->getBody()->write($content);
+    if (! isset($content)) {
+        if (isset($template)) {
+            $content = str_replace(
+                array_map(static function ($key) {
+                    return '{{ ' . $key . ' }}';
+                }, array_keys($context)),
+                array_values($context),
+                $template
+            );
+        } else {
+            throw new \RuntimeException('Unable to render response, no template or content provided');
+        }
+    }
+    $response->getBody()->rewind();
+    $response->getBody()->write($content);
+}
 
 http_response_code($response->getStatusCode());
 
@@ -197,6 +210,7 @@ foreach ($response->getHeaders() as $name => $values) {
         header(sprintf('%s: %s', $name, $value), false);
     }
 }
+
 header_remove('X-Powered-By');
 
 echo trim($response->getBody());
