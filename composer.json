@@ -12,7 +12,8 @@
         "ext-mbstring": "*",
         "ext-openssl": "*",
         "ext-pcre": "*",
-        "laminas/laminas-diactoros": "^3.8"
+        "laminas/laminas-diactoros": "^3.8",
+        "sweetrdf/easyrdf": "^1.19"
     },
     "require-dev": {
         "ext-xdebug": "*",
