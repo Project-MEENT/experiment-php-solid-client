@@ -3,5 +3,25 @@
         "bin-dir": "bin/",
         "sort-packages": true
     },
+    "description": "Solid Client call examples",
+    "license": "MPL-2.0",
+    "name": "potherca/solid-example",
+    "require": {
+        "php": "^8.0",
+        "ext-json": "*",
+        "ext-mbstring": "*",
+        "ext-openssl": "*",
+        "ext-pcre": "*"
+    },
+    "require-dev": {
+        "ext-xdebug": "*",
+        "ext-xml": "*",
+        "filp/whoops": "^2.18"
+    },
+    "suggest": {
+        "ext-bcmath": "Fallback recommendation to improve performance. If not available, 'phpseclib/bcmath_compat' should be used.",
+        "ext-gmp": "Primary recommendation to improve performance. If not available, 'ext-bcmath' should be used.",
+        "phpseclib/bcmath_compat": "BCmath polyfill for servers where neither GMP nor BCmath is available"
+    },
     "type": "project"
 }
