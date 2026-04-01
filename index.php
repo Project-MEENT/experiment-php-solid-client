@@ -91,7 +91,7 @@ if (class_exists(\Whoops\Run::class) && ! isset($whoops)) {
 // =============================================================================
 // Handle requests
 // -----------------------------------------------------------------------------
-$path = rtrim($request->getUri()->getPath(), '/');
+$path = trim($request->getUri()->getPath(), '/');
 
 $context = [
     'content' => '',
@@ -102,10 +102,11 @@ $context = [
 
 switch ($path) {
     case '':
-    case '/' . basename(__FILE__):
+    case basename(__FILE__):
         $context['content'] = <<<'HTML'
 <ol>
     <li><a href="/webid">WebID</a></li>
+    <li><a href="/oidc">OIDC</a></li>
 </ol>
 HTML;
 
@@ -114,10 +115,12 @@ HTML;
         $context['title'] = 'Solid Examples';
     break;
 
-    case '/webid':
-    case '/01.webid':
-    case '/example.01.webid':
+    case 'webid':
         $response = require __DIR__ . '/example.01.webid.php';
+    break;
+
+    case 'oidc':
+        $response = require __DIR__ . '/example.02.oidc-discovery.php';
     break;
 
     default:

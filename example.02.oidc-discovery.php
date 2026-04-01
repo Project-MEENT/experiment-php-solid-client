@@ -1,16 +1,17 @@
 <?php
 
 /**
- * Example of how to discover the OIDC issuer(s) for a given WebID URL.
+ * This file contains an example of how to discover OIDC endpoints from an issuer.
  *
- * This example was built so it can be run directly or included from another file.
+ * Given an OIDC issuer URL, this example demonstrates fetching the OpenID Connect
+ * configuration from the issuer's /.well-known/openid-configuration endpoint.
+ *
+ * This configuration contains the authorization_endpoint, token_endpoint,
+ * userinfo_endpoint, and other metadata needed for authentication.
  */
 
 namespace Potherca\Examples\Solid;
 
-use EasyRdf\Graph;
-use EasyRdf\RdfNamespace;
-use EasyRdf\Resource;
 use GuzzleHttp\Client;
 use Laminas\Diactoros\Response;
 use Laminas\Diactoros\ServerRequestFactory;
@@ -41,47 +42,33 @@ if (class_exists(\Whoops\Run::class) && ! isset($whoops)) {
 // =============================================================================
 // Handle requests
 // -----------------------------------------------------------------------------
-$webIdUrl = $request->getParsedBody()['webid']
-    ?? $request->getQueryParams()['webid']
+$issuerUrl = $request->getParsedBody()['issuer']
+    ?? $request->getQueryParams()['issuer']
     ?? '';
 
-if ($webIdUrl) {
-    if (filter_var($webIdUrl, FILTER_VALIDATE_URL)) {
-        if (! RdfNamespace::get('solid')) {
-            RdfNamespace::set('solid', 'http://www.w3.org/ns/solid/terms#');
-        }
-
+if ($issuerUrl !== '') {
+    if (filter_var($issuerUrl, FILTER_VALIDATE_URL)) {
+        $issuerUrl = rtrim($issuerUrl, '/');
         $client = new Client();
-        $graph = new Graph();
 
-        $webIdResponse = $client->get($webIdUrl);
-        $content = $webIdResponse->getBody()->getContents();
-        $format = explode(';', $webIdResponse->getHeaderLine('Content-Type'))[0] ?? null;
-        $graph->parse($content, $format, $webIdUrl);
+        $discoveryUrl = $issuerUrl  . '/.well-known/openid-configuration';
 
-        $profile = $graph->resource($webIdUrl);
-
-        $issuers = [];
-
-        if ($profile->hasProperty('solid:oidcIssuer')) {
-            $resources = $profile->allResources('solid:oidcIssuer');
-            $uris = array_map(static function (Resource $issuer) {return $issuer->getUri();}, $resources);
-            $issuers = array_unique($uris);
-        }
+        $discoveryResponse = $client->get($discoveryUrl); // Throws \GuzzleHttp\Exception\GuzzleException
+        $contents = $discoveryResponse->getBody()->getContents(); // Throws \RuntimeException
+        $config = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
     }
 }
-$outputState = empty($webIdUrl) || empty($issuers) ? '' : 'hidden';
+
+$outputState = empty($issuerUrl) || empty($config) ? '' : 'hidden';
 
 $fileHandle = fopen(__FILE__, 'rb');
 fseek($fileHandle, __COMPILER_HALT_OFFSET__);
 $homepage = stream_get_contents($fileHandle);
 $content = vsprintf($homepage, [
-    '%1$s Issuer' => empty($issuers) ? '' : $issuers[0],
-    '%2$s Issuers' => empty($issuers) ? '' : var_export($issuers, true),
-    '%3$s Show Form' => ! isset($exception) && $outputState ? 'hidden' : '',
-    '%4$s Show Output' => $outputState ? '' : 'hidden',
-    '%5$s Web ID URL' => $webIdUrl,
-    '%6$s WebID Profile' => empty($profile) ? '' : $profile->dump(),
+    '%1$s Show Form' => ! isset($exception) && $outputState ? 'hidden' : '',
+    '%2$s Show Output' => $outputState ? '' : 'hidden',
+    '%3$s Issuer URL' => $issuerUrl,
+    '%4$s OIDC Config' => isset($config) ? var_export($config, true) : '',
 ]);
 $response->getBody()->write($content);
 // =============================================================================
@@ -93,6 +80,7 @@ $response->getBody()->write($content);
 if (isset($context)) {
     // Not called directly but included from index.php
     unset($context);
+
     return $response;
 }
 
@@ -114,9 +102,9 @@ __halt_compiler();<!doctype html>
 
 <link
     href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' stroke='%%23000' stroke-width='0' viewBox='-5 -5 110 110'><circle cx='50' cy='50' r='51' fill='%%237C4DFF'/><circle cx='50' cy='50' r='34' fill='%%23F2E205'/><path fill='%%23FFF' stroke-width='2' d='M-1 50h16a38 35.5 0 0027.5 34.45V68.7A20 20 0 0150 30.2a20 20 0 017.5 38.5v15.75A38 35.5 0 0085 50h15A1 1 0 010 50z'/></svg>"
-    rel='icon' title='PDS Interop Logo' />
+    rel='icon' title='PDS Interop Logo'>
 
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mvp.css@1.17.3/mvp.min.css" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mvp.css@1.17.3/mvp.min.css">
 
 <style>
     form { background-color: var(--color-bg-secondary); }
@@ -128,39 +116,40 @@ __halt_compiler();<!doctype html>
     }
 </style>
 <header>
-    <h1><title>Fetch OIDC Issuer from WebID Profile</title></h1>
+    <h1><title>OIDC Server Discovery</title></h1>
     <p>
-        This example demonstrates how to fetch a WebID profile and extract the
-        OIDC issuer(s) so it can be used for authentication.
+        This example demonstrates how to fetch a issuer's OpenID Connect configuration
+        to get endpoints for authentication.
     </p>
 </header>
 <main>
     <section>
-        <form enctype="application/x-www-form-urlencoded" method="POST" %3$s>
+        <form enctype="application/x-www-form-urlencoded" method="GET" %1$s>
             <label>
-                WebID URI:
+                Issuer URL:
                 <input
-                    name="webid"
-                    placeholder="https://example.com/profile/card#me"
+                    name="issuer"
+                    placeholder="https://idp.example.com/"
                     required
                     type="url"
-                    value="%5$s"
+                    value="%3$s"
                 />
             </label>
-            <button>Fetch issuer</button>
+            <button>Discover</button>
         </form>
     </section>
     <section>
-        <output %4$s>
+        <output %2$s>
             <ol>
-                <li>The WebID URI is <code>%5$s</code></li>
-                <li>The WebID profile is: %6$s</li>
-                <li>The OIDC issuer(s) are:
-                    <pre><code>%2$s</code></pre>
+                <li>
+                    The OIDC Provider is <code>%3$s</code>
+                    <!--<a href="example.03.oidc-authorize.php?issuer=%3$s">Use this provider in the OIDC Auth example</a>-->
+                </li>
+                <li>OIDC Provider Configuration:
+                    <pre><code>%4$s</code></pre>
                 </li>
                 <li>
-                    The first OIDC issuer is: <code>%1$s</code>
-                    <a href="example.02.oidc-discovery.php?issuer=%1$s">Use this issuer in the OIDC example</a>
+
                 </li>
             </ol>
         </output>
