@@ -13,6 +13,7 @@ use Facile\OpenIDClient\Client\ClientBuilder;
 use Facile\OpenIDClient\Client\Metadata\ClientMetadata;
 use Facile\OpenIDClient\Issuer\IssuerBuilder;
 use Facile\OpenIDClient\Issuer\Metadata\Provider\MetadataProviderBuilder;
+use Facile\OpenIDClient\Service\Builder\AuthorizationServiceBuilder;
 use Facile\OpenIDClient\Service\Builder\RegistrationServiceBuilder;
 use GuzzleHttp\Client;
 use Laminas\Diactoros\Response;
@@ -300,47 +301,61 @@ if ($issuerUrl !== '' && filter_var($issuerUrl, FILTER_VALIDATE_URL)) {
 
 $outputState = empty($issuerUrl) || empty($issuerConfig) ? '' : 'hidden';
 
-$issuerHash = hash('sha256', $issuerUrl);
+if (isset($issuer)) {
+    $issuerHash = hash('sha256', $issuerUrl);
 
-// If the issuer requires pre-registration, use the initial access token provided during that process to register the client.
-$initialTokens = [$issuerHash => null];
+    // If the issuer requires pre-registration, use the initial access token provided during that process to register the client.
+    $initialTokens = [$issuerHash => null];
 
-// Check if our client is already registered, if not, register it and store the metadata for future use
-$clientMetadataFile = $issuerHash . '/issuer_metadata.json';
-$clientMetadataFileExists = $filesystem->fileExists($clientMetadataFile);
-if ($clientMetadataFileExists) {
-    // Client already registered, reading metadata from file
-    $fileContents = $filesystem->read($clientMetadataFile);
-    $claims = json_decode($fileContents, true, 512, JSON_THROW_ON_ERROR);
-} else {
-    // Client not registered, registering client...
-    $registrationServiceBuilder = new RegistrationServiceBuilder();
-    $registration = $registrationServiceBuilder->build();
+    // Check if our client is already registered, if not, register it and store the metadata for future use
+    $clientMetadataFile = $issuerHash . '/issuer_metadata.json';
+    $clientMetadataFileExists = $filesystem->fileExists($clientMetadataFile);
+    if ($clientMetadataFileExists) {
+        // Client already registered, reading metadata from file
+        $fileContents = $filesystem->read($clientMetadataFile);
+        $registeredClaims = json_decode($fileContents, true, 512, JSON_THROW_ON_ERROR);
+    } else {
+        // Client not registered, registering client...
+        $registrationServiceBuilder = new RegistrationServiceBuilder();
+        $registration = $registrationServiceBuilder->build();
 
-    try {
-        $claims = $registration->register($issuer, $clientConfig, $initialTokens[$issuerHash]);
-    } catch (\Facile\OpenIDClient\Exception\ExceptionInterface $e) {
-        // InvalidArgumentException(Issuer does not support dynamic client registration)
-        // RuntimeException(Unable to encode client metadata | Unable to register OpenID client | Registration response did not return a client_id field)
-        error($e, 'Registration failed');
-        exit;
+        try {
+            $registeredClaims = $registration->register($issuer, $clientConfig, $initialTokens[$issuerHash]);
+        } catch (\Facile\OpenIDClient\Exception\ExceptionInterface $e) {
+            // InvalidArgumentException(Issuer does not support dynamic client registration)
+            // RuntimeException(Unable to encode client metadata | Unable to register OpenID client | Registration response did not return a client_id field)
+            error($e, 'Registration failed');
+            exit;
+        }
+
+        $fileContents = json_encode($registeredClaims, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT);
+        $filesystem->write($clientMetadataFile, $fileContents);
     }
 
-    $fileContents = json_encode($claims, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT);
-    $filesystem->write($clientMetadataFile, $fileContents);
+    $clientMetadata = ClientMetadata::fromArray($registeredClaims);
+
+    // @TODO: Create DPoP Proof Factory // $dpopProofFactory = ...;
+
+    $clientBuilder = new ClientBuilder();
+    $client = $clientBuilder
+        ->setHttpClient($httpClient)
+        ->setIssuer($issuer)
+        ->setClientMetadata($clientMetadata)
+        // @TODO:->setAuthMethodFactory($dpopProofFactory)
+        ->build();
 }
 
-$clientMetadata = ClientMetadata::fromArray($claims);
+if (isset($client)) {
+    // At this point there is a registered client, but it is not authenticated yet.
+    $authorizationServiceBuilder = new AuthorizationServiceBuilder();
+    $authorizationServiceBuilder->setHttpClient($httpClient);
+    $authorizationService = $authorizationServiceBuilder->build();
 
-$clientBuilder = new ClientBuilder();
-$client = $clientBuilder
-    ->setHttpClient($httpClient)
-    ->setIssuer($issuer)
-    ->setClientMetadata($clientMetadata)
-    // @TODO: ->setAuthMethodFactory($dpop)
-    ->build();
+// Step 2. Check if user is authenticated
+    $authorizationRequestParams = [];
 
-// At this point there is a registered client, but it is not authenticated yet.
+    $redirectAuthorizationUri = $authorizationService->getAuthorizationUri($client, $authorizationRequestParams);
+}
 
 if ($isRedirect) {
 }
@@ -358,7 +373,8 @@ $content = vsprintf($homepage, [
     '%7$s Client Data' => var_export($clientConfig, true),
     '%8$s Issuer Metadata File' => $clientMetadataFile,
     '%9$s Issuer Metadata File exists' => $clientMetadataFileExists ? '▶️' : '⏺',
-    '%10$s Issuer Metadata' => var_export($claims, true),
+    '%10$s Issuer Metadata' => isset($registeredClaims) ? var_export($registeredClaims, true) : '',
+    '%11$s Redirect URI' => $redirectAuthorizationUri ?? '',
 ]);
 $response->getBody()->write($content);
 // =============================================================================
@@ -403,6 +419,23 @@ __halt_compiler();<!doctype html>
         background-color: var(--color-accent);
         border-radius: 10px;
         padding: 10px;
+    }
+
+    #redirectAuthorizationUri a {
+        max-width: calc( var(--width-content) / 2 );
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    #redirectAuthorizationUri a:hover {
+        overflow: visible;
+        white-space: normal;
+        word-break: break-word;
+    }
+
+    #redirectAuthorizationUri:has(a[href=""]) {
+        display: none;
     }
 </style>
 <header>
@@ -452,6 +485,12 @@ __halt_compiler();<!doctype html>
                         <summary>Client metadata</summary>
                         <pre><code>%10$s</code></pre>
                     </details>
+                </li>
+                <li id="redirectAuthorizationUri">
+                    <p>
+                    <em>Usually this would be an automatic redirect, but it is shown here for demonstration purposes.</em> Visit redirect URI:
+                    </p>
+                    <a href="%11$s">%11$s</a>
                 </li>
             </ol>
         </output>
