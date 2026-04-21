@@ -199,6 +199,27 @@ function findHttpResponse($trace, &$origin, &$dump)
 
 
 // =============================================================================
+// Utility functions
+// -----------------------------------------------------------------------------
+function base64UrlDecode($encodedData) {
+    $padding = (4 - strlen($encodedData) % 4) % 4;
+    $encodedPayload = strtr($encodedData, '-_', '+/') . str_repeat('=', $padding);
+    $decodedData = base64_decode($encodedPayload, true);
+
+    if ($decodedData === false) {
+        throw new \InvalidArgumentException('State contains invalid base64url data');
+    }
+
+    return $decodedData;
+}
+
+function base64UrlEncode($data) {
+    return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
+}
+// =============================================================================
+
+
+// =============================================================================
 // Config
 // -----------------------------------------------------------------------------
 $storageLocation = __DIR__ . '/build/storage/';
@@ -214,6 +235,10 @@ $clientId = $clientServer . '/' . $clientConfigFile;
 $clientName = 'Example Client Name';
 $clientRedirectUris = [$clientRedirectUri];
 $clientSecret = 'my-client-secret';
+
+// -----------------------------------------------------------------------------
+$stateSigningKey = $clientSecret; // @TODO: Use separate secret (i.e. private key) for signing
+$stateTtlSeconds = 300;
 // =============================================================================
 
 
@@ -301,6 +326,10 @@ if ($issuerUrl !== '' && filter_var($issuerUrl, FILTER_VALIDATE_URL)) {
 
 $outputState = empty($issuerUrl) || empty($issuerConfig) ? '' : 'hidden';
 
+$clientBuilder = new ClientBuilder();
+$clientBuilder = $clientBuilder
+    ->setHttpClient($httpClient);
+
 if (isset($issuer)) {
     $issuerHash = hash('sha256', $issuerUrl);
 
@@ -336,28 +365,190 @@ if (isset($issuer)) {
 
     // @TODO: Create DPoP Proof Factory // $dpopProofFactory = ...;
 
-    $clientBuilder = new ClientBuilder();
-    $client = $clientBuilder
-        ->setHttpClient($httpClient)
+    $clientBuilder = $clientBuilder
         ->setIssuer($issuer)
         ->setClientMetadata($clientMetadata)
         // @TODO:->setAuthMethodFactory($dpopProofFactory)
-        ->build();
+    ;
+
+    $client = $clientBuilder->build();
 }
+
+$authorizationServiceBuilder = new AuthorizationServiceBuilder();
+$authorizationServiceBuilder->setHttpClient($httpClient);
+$authorizationService = $authorizationServiceBuilder->build();
 
 if (isset($client)) {
     // At this point there is a registered client, but it is not authenticated yet.
-    $authorizationServiceBuilder = new AuthorizationServiceBuilder();
-    $authorizationServiceBuilder->setHttpClient($httpClient);
-    $authorizationService = $authorizationServiceBuilder->build();
-
-// Step 2. Check if user is authenticated
+    // Step 2. Check if user is authenticated
     $authorizationRequestParams = [];
+
+    // Add Issuer URL as "state" value, so it can be retrieved after redirect
+    $header = base64UrlEncode(json_encode(['alg' => 'HS256', 'typ' => 'JWT'], JSON_THROW_ON_ERROR));
+    $payload = base64UrlEncode(json_encode([
+        'exp' => time() + $stateTtlSeconds,
+        'issr' => $issuerUrl,
+    ], JSON_THROW_ON_ERROR));
+    $signature = base64UrlEncode(hash_hmac('sha256', $header . '.' . $payload, $stateSigningKey, true));
+
+    $authorizationRequestParams['state'] = $header . '.' . $payload . '.' . $signature;
+
+    // @TODO: Add PKCE?
 
     $redirectAuthorizationUri = $authorizationService->getAuthorizationUri($client, $authorizationRequestParams);
 }
 
 if ($isRedirect) {
+    // Step 3. Exchange code for access token
+
+    // At this point the user is redirected back to the application from the authorization server.
+    // The authorization server will redirect the user back to the application with a code or error parameter.
+
+    // The error parameter is set when something has gone wrong.
+    if (isset($request->getQueryParams()['error'])) {
+        error($request->getQueryParams()['error'], 'Provider returned an error', $request->getQueryParams());
+        exit;
+    }
+
+    // The authorization response must include a non-empty authorization code.
+    $authorizationCode = $request->getQueryParams()['code'] ?? null;
+    if (! is_string($authorizationCode) || $authorizationCode === '') {
+        error($authorizationCode, 'Provider did not return a valid authorization code', $request->getQueryParams());
+        exit;
+    }
+
+    $stateToken = $request->getQueryParams()['state'] ?? null;
+    if (! is_string($stateToken) || $stateToken === '') {
+        error('Missing state parameter', 'Callback is missing "state" parameter', $request->getQueryParams());
+        exit;
+    }
+
+    $parts = explode('.', $stateToken);
+
+    if (count($parts) !== 3) {
+        $error = 'State must be a compact JWT';
+    } else {
+        $header = json_decode(base64UrlDecode($parts[0]), true, 512, JSON_THROW_ON_ERROR);
+        $payload = json_decode(base64UrlDecode($parts[1]), true, 512, JSON_THROW_ON_ERROR);
+
+        $expectedSignature = base64UrlEncode(hash_hmac('sha256', $parts[0] . '.' . $parts[1], $stateSigningKey, true));
+
+        if (! is_array($header) || ($header['alg'] ?? null) !== 'HS256') {
+            $error = 'State JWT must use HS256';
+        } else if (! is_array($payload) || ! isset($payload['issr'], $payload['exp'])) {
+            $error = 'State JWT is missing required claims';
+        }else if (! hash_equals($expectedSignature, $parts[2])) {
+            $error = 'State JWT signature is invalid';
+        } else if (! is_numeric($payload['exp']) || (int) $payload['exp'] < time()) {
+            $error = 'State JWT is expired';
+        } else if (! is_string($payload['issr']) || ! filter_var($payload['issr'], FILTER_VALIDATE_URL)) {
+            $error = 'State JWT issuer claim is invalid';
+        }
+    }
+
+    if ( isset($error) ) {
+        error($error, 'Invalid or expired state', $request->getQueryParams());
+        exit;
+    }
+
+    // In callback mode, issuer is recovered exclusively from signed state.
+    $issuerUrl = rtrim($payload['issr'], '/');
+    $openidDiscoveryUrl = $issuerUrl . '/.well-known/openid-configuration';
+
+    // At this point, post redirect, the client SHOULD already be registered
+    $issuerHash = hash('sha256', $issuerUrl);
+    $clientMetadataFile = $issuerHash . '/issuer_metadata.json';
+    $fileContents = $filesystem->read($clientMetadataFile);
+    $registeredClaims = json_decode($fileContents, true, 512, JSON_THROW_ON_ERROR);
+    $clientMetadata = ClientMetadata::fromArray($registeredClaims);
+
+    try {
+        $issuer = $issuerBuilder
+            ->setMetadataProviderBuilder($metadataProviderBuilder)
+            ->build($openidDiscoveryUrl);
+    } catch (\Facile\OpenIDClient\Exception\ExceptionInterface $e) {
+        error($e, 'Failed to discover issuer metadata');
+        exit;
+    }
+
+    $client = $clientBuilder
+        ->setIssuer($issuer)
+        ->setClientMetadata($clientMetadata)
+        ->build();
+
+    // On success, the token endpoint returns tokens
+    try {
+        // Use explicit grant() so this example fully controls what gets sent to the token endpoint.
+        $tokenSet = $authorizationService->grant($client, [
+            'grant_type' => 'authorization_code',
+            'code' => $authorizationCode,
+            'redirect_uri' => $clientRedirectUri,
+        ]);
+    } catch (\Facile\OpenIDClient\Exception\ExceptionInterface $e) {
+        // InvalidArgumentException(Invalid metadata content)
+        if ($e->getPrevious()) {
+            // Response could not be parsed as JSON
+            $trace = $e->getPrevious()->getTrace();
+            if (isset($trace[0]['args'][0])) {
+                $responseBody = $trace[0]['args'][0];
+            } else {
+                $responseBody = 'Could not retrieve response body';
+            }
+        } else {
+            // Parse was successful, but the response is not an array
+            $responseBody = null;
+        }
+
+        if (str_contains($e->getMessage(), 'invalid_grant')) {
+            error($e, 'Token endpoint rejected code_verifier (invalid_grant)', $responseBody);
+            exit;
+        }
+
+        error($e, 'Failed to exchange code for access token');
+        exit;
+    }
+
+    $idTokenVerified = false;
+    $idToken = $tokenSet->getIdToken(); // Unencrypted id_token, if returned
+    $accessToken = $tokenSet->getAccessToken(); // Access token, if returned
+
+    // check if we have an authenticated user
+    if ($idToken) {
+        try {
+            $verifier = (new IdTokenVerifierBuilder())->build($client);
+
+            if (is_string($accessToken) && $accessToken !== '') {
+                $verifier = $verifier->withAccessToken($accessToken);
+            }
+
+            $idTokenClaims = $verifier->verify($idToken);
+            $idTokenVerified = true;
+        } catch (\Facile\JoseVerifier\Exception\ExceptionInterface $e) {
+            // Fallback: decode the JWT claims without trusting the signature.
+            $idTokenClaims = [
+                'error' => $e->getMessage(),
+            ];
+
+            $parts = explode('.', $idToken);
+
+            if (count($parts) === 3) {
+                $payload = base64UrlDecode($parts[1]);
+
+                $claims = json_decode($payload, true);
+
+                if (is_array($claims)) {
+                    $idTokenClaims = array_merge($idTokenClaims, $claims);
+                }
+            }
+        }
+    } else {
+        error('No id_token returned', 'User is not authenticated');
+        exit;
+    }
+
+    // Refresh token
+    // $refreshTokenValue = $tokenSet->getRefreshToken(); // Refresh token, if returned
+    // $refreshToken = $authorizationService->refresh($client, $refreshTokenValue);
 }
 
 $fileHandle = fopen(__FILE__, 'rb');
@@ -375,6 +566,12 @@ $content = vsprintf($homepage, [
     '%9$s Issuer Metadata File exists' => $clientMetadataFileExists ? '▶️' : '⏺',
     '%10$s Issuer Metadata' => isset($registeredClaims) ? var_export($registeredClaims, true) : '',
     '%11$s Redirect URI' => $redirectAuthorizationUri ?? '',
+    '%12$s ID Token Verified' => isset($idTokenVerified)
+        ? ($idTokenVerified
+            ? '✅'
+            : '❌ <strong>(WARNING: id_token signature verification failed, claims should not be trusted!)<strong>')
+        : 'N/A',
+    '%13$s ID Token Claims' => isset($idTokenClaims) ? var_export($idTokenClaims, true) : '',
 ]);
 $response->getBody()->write($content);
 // =============================================================================
@@ -491,6 +688,10 @@ __halt_compiler();<!doctype html>
                     <em>Usually this would be an automatic redirect, but it is shown here for demonstration purposes.</em> Visit redirect URI:
                     </p>
                     <a href="%11$s">%11$s</a>
+                </li>
+                <li>
+                    ID Token claims %12$s
+                    <pre><code>%13$s</code></pre>
                 </li>
             </ol>
         </output>
