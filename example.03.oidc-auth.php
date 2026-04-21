@@ -9,8 +9,11 @@
 
 namespace Potherca\Examples\Solid;
 
+use Facile\OpenIDClient\Client\ClientBuilder;
+use Facile\OpenIDClient\Client\Metadata\ClientMetadata;
 use Facile\OpenIDClient\Issuer\IssuerBuilder;
 use Facile\OpenIDClient\Issuer\Metadata\Provider\MetadataProviderBuilder;
+use Facile\OpenIDClient\Service\Builder\RegistrationServiceBuilder;
 use GuzzleHttp\Client;
 use Laminas\Diactoros\Response;
 use Laminas\Diactoros\ServerRequestFactory;
@@ -200,13 +203,13 @@ function findHttpResponse($trace, &$origin, &$dump)
 $storageLocation = __DIR__ . '/build/storage/';
 
 // -----------------------------------------------------------------------------
-$clientMetadataFile = 'client_id.json';
+$clientConfigFile = 'client_id.json';
 
 $clientServer = $request->getUri()->getScheme() . '://' . $request->getUri()->getHost() . ':' . $request->getUri()->getPort();
 // Redirect URI is the request URL, including port and path, excluding query param
 $clientRedirectUri = $request->getUri()->withQuery('')->__toString();
 
-$clientId = $clientServer . '/' . $clientMetadataFile;
+$clientId = $clientServer . '/' . $clientConfigFile;
 $clientName = 'Example Client Name';
 $clientRedirectUris = [$clientRedirectUri];
 $clientSecret = 'my-client-secret';
@@ -249,8 +252,9 @@ $issuerBuilder = new IssuerBuilder();
 $metadataProviderBuilder = new MetadataProviderBuilder();
 $metadataProviderBuilder->setHttpClient($httpClient);
 
-$clientMetadataFileExists = $filesystem->fileExists($clientMetadataFile);
-if (! $clientMetadataFileExists) {
+// Step 1. Create client for issuer
+$clientConfigFileExists = $filesystem->fileExists($clientConfigFile);
+if (! $clientConfigFileExists) {
     // Client metadata file not found, creating...
     $data = [
         'client_id' => $clientId,
@@ -260,11 +264,11 @@ if (! $clientMetadataFileExists) {
         'token_endpoint_auth_method' => 'client_secret_basic', // the auth method tor the token endpoint
     ];
 
-    $filesystem->write($clientMetadataFile, json_encode($data, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
+    $filesystem->write($clientConfigFile, json_encode($data, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
 }
 
 // Reading client metadata from file
-$clientData = json_decode($filesystem->read($clientMetadataFile), true, 512, JSON_THROW_ON_ERROR);
+$clientConfig = json_decode($filesystem->read($clientConfigFile), true, 512, JSON_THROW_ON_ERROR);
 // =============================================================================
 
 
@@ -282,15 +286,61 @@ $isRedirect = isset($request->getQueryParams()['code'])
 if ($issuerUrl !== '' && filter_var($issuerUrl, FILTER_VALIDATE_URL)) {
     $issuerUrl = rtrim($issuerUrl, '/');
     $openidDiscoveryUrl = $issuerUrl . '/.well-known/openid-configuration';
-
-    $issuer = $issuerBuilder
-        ->setMetadataProviderBuilder($metadataProviderBuilder)
-        ->build($openidDiscoveryUrl); // @throws \Http\Discovery\Exception | \Facile\OpenIDClient\Exception\ExceptionInterface
+    try {
+        $issuer = $issuerBuilder
+            ->setMetadataProviderBuilder($metadataProviderBuilder)
+            ->build($openidDiscoveryUrl);
+    } catch (\Facile\OpenIDClient\Exception\ExceptionInterface $e) {
+        error($e, 'Failed to discover issuer metadata');
+        exit;
+    }
 
     $issuerConfig = $issuer->getMetadata()->toArray();
 }
 
 $outputState = empty($issuerUrl) || empty($issuerConfig) ? '' : 'hidden';
+
+$issuerHash = hash('sha256', $issuerUrl);
+
+// If the issuer requires pre-registration, use the initial access token provided during that process to register the client.
+$initialTokens = [$issuerHash => null];
+
+// Check if our client is already registered, if not, register it and store the metadata for future use
+$clientMetadataFile = $issuerHash . '/issuer_metadata.json';
+$clientMetadataFileExists = $filesystem->fileExists($clientMetadataFile);
+if ($clientMetadataFileExists) {
+    // Client already registered, reading metadata from file
+    $fileContents = $filesystem->read($clientMetadataFile);
+    $claims = json_decode($fileContents, true, 512, JSON_THROW_ON_ERROR);
+} else {
+    // Client not registered, registering client...
+    $registrationServiceBuilder = new RegistrationServiceBuilder();
+    $registration = $registrationServiceBuilder->build();
+
+    try {
+        $claims = $registration->register($issuer, $clientConfig, $initialTokens[$issuerHash]);
+    } catch (\Facile\OpenIDClient\Exception\ExceptionInterface $e) {
+        // InvalidArgumentException(Issuer does not support dynamic client registration)
+        // RuntimeException(Unable to encode client metadata | Unable to register OpenID client | Registration response did not return a client_id field)
+        error($e, 'Registration failed');
+        exit;
+    }
+
+    $fileContents = json_encode($claims, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT);
+    $filesystem->write($clientMetadataFile, $fileContents);
+}
+
+$clientMetadata = ClientMetadata::fromArray($claims);
+
+$clientBuilder = new ClientBuilder();
+$client = $clientBuilder
+    ->setHttpClient($httpClient)
+    ->setIssuer($issuer)
+    ->setClientMetadata($clientMetadata)
+    // @TODO: ->setAuthMethodFactory($dpop)
+    ->build();
+
+// At this point there is a registered client, but it is not authenticated yet.
 
 if ($isRedirect) {
 }
@@ -303,10 +353,12 @@ $content = vsprintf($homepage, [
     '%2$s Show Output' => $outputState ? '' : 'hidden',
     '%3$s Issuer URL' => $issuerUrl,
     '%4$s OIDC Config' => isset($issuerConfig) ? var_export($issuerConfig, true) : '',
-    '%5$s Client Metadata File' => $clientMetadataFile,
-    '%6$s Client Metadata File exists' => $clientMetadataFileExists ? '▶️' : '⏺️',
-    '%7$s Client Metadata' => var_export($clientData, true),
-
+    '%5$s Client Data File' => $clientConfigFile,
+    '%6$s Client Data File exists' => $clientConfigFileExists ? '▶️' : '⏺️',
+    '%7$s Client Data' => var_export($clientConfig, true),
+    '%8$s Issuer Metadata File' => $clientMetadataFile,
+    '%9$s Issuer Metadata File exists' => $clientMetadataFileExists ? '▶️' : '⏺',
+    '%10$s Issuer Metadata' => var_export($claims, true),
 ]);
 $response->getBody()->write($content);
 // =============================================================================
@@ -388,10 +440,17 @@ __halt_compiler();<!doctype html>
                     </details>
                 </li>
                 <li>
-                    Reading client metadata from file: <code>%5$s</code> %6$s
+                    Reading client data from file: <code>%5$s</code> %6$s
+                    <details>
+                        <summary>Client data</summary>
+                        <pre><code>%7$s</code></pre>
+                    </details>
+                </li>
+                <li>
+                    Client metadata file: <code>%8$s</code> %9$s
                     <details>
                         <summary>Client metadata</summary>
-                        <pre><code>%7$s</code></pre>
+                        <pre><code>%10$s</code></pre>
                     </details>
                 </li>
             </ol>
