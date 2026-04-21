@@ -12,6 +12,8 @@
 
 namespace Potherca\Examples\Solid;
 
+use Facile\OpenIDClient\Issuer\IssuerBuilder;
+use Facile\OpenIDClient\Issuer\Metadata\Provider\MetadataProviderBuilder;
 use GuzzleHttp\Client;
 use Laminas\Diactoros\Response;
 use Laminas\Diactoros\ServerRequestFactory;
@@ -40,21 +42,45 @@ if (class_exists(\Whoops\Run::class) && ! isset($whoops)) {
 
 
 // =============================================================================
+// Create Client
+// -----------------------------------------------------------------------------
+$httpClientConfig = [
+    // Allow self-signed certificates for local development
+    // 'verify' => false,
+    // 'verify_host' => false,
+    // 'verify_peer' => false,
+];
+$httpClient = new Client($httpClientConfig);
+
+/* Basic Usage */
+$issuerBuilder = new IssuerBuilder();
+$metadataProviderBuilder = new MetadataProviderBuilder();
+$metadataProviderBuilder->setHttpClient($httpClient);
+// =============================================================================
+
+
+// =============================================================================
 // Handle requests
 // -----------------------------------------------------------------------------
 $issuerUrl = $request->getParsedBody()['issuer']
     ?? $request->getQueryParams()['issuer']
     ?? '';
 
-if ($issuerUrl !== '') {
-    if (filter_var($issuerUrl, FILTER_VALIDATE_URL)) {
-        $issuerUrl = rtrim($issuerUrl, '/');
-        $client = new Client();
+if ($issuerUrl !== '' && filter_var($issuerUrl, FILTER_VALIDATE_URL)) {
+    $issuerUrl = rtrim($issuerUrl, '/');
+    $openidDiscoveryUrl = $issuerUrl . '/.well-known/openid-configuration';
 
-        $discoveryUrl = $issuerUrl  . '/.well-known/openid-configuration';
+    if (isset($issuerBuilder)) {
+        // @uses \Facile\OpenIDClient\Issuer\IssuerBuilderInterface
+        $issuer = $issuerBuilder
+            ->setMetadataProviderBuilder($metadataProviderBuilder)
+            ->build($openidDiscoveryUrl); // @throws \Http\Discovery\Exception | \Facile\OpenIDClient\Exception\ExceptionInterface
 
-        $discoveryResponse = $client->get($discoveryUrl); // Throws \GuzzleHttp\Exception\GuzzleException
-        $contents = $discoveryResponse->getBody()->getContents(); // Throws \RuntimeException
+        $config = $issuer->getMetadata()->toArray();
+    } else {
+        // @uses \GuzzleHttp\ClientInterface | \Psr\Http\Client\ClientInterface
+        $discoveryResponse = $httpClient->get($openidDiscoveryUrl); // @throws \GuzzleHttp\Exception\GuzzleException
+        $contents = $discoveryResponse->getBody()->getContents(); // @throws \RuntimeException
         $config = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
     }
 }
