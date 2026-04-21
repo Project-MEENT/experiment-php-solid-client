@@ -39,6 +39,25 @@ if (class_exists(\Whoops\Run::class) && ! isset($whoops)) {
 
 
 // =============================================================================
+// Config
+// -----------------------------------------------------------------------------
+$storageLocation = __DIR__ . '/build/storage/';
+
+// -----------------------------------------------------------------------------
+$clientMetadataFile = 'client_id.json';
+
+$clientServer = $request->getUri()->getScheme() . '://' . $request->getUri()->getHost() . ':' . $request->getUri()->getPort();
+// Redirect URI is the request URL, including port and path, excluding query param
+$clientRedirectUri = $request->getUri()->withQuery('')->__toString();
+
+$clientId = $clientServer . '/' . $clientMetadataFile;
+$clientName = 'Example Client Name';
+$clientRedirectUris = [$clientRedirectUri];
+$clientSecret = 'my-client-secret';
+// =============================================================================
+
+
+// =============================================================================
 // Create Client
 // -----------------------------------------------------------------------------
 $httpClientConfig = [
@@ -49,10 +68,47 @@ $httpClientConfig = [
 ];
 $httpClient = new Client($httpClientConfig);
 
+// -----------------------------------------------------------------------------
+// Setup cache and storage
+// -----------------------------------------------------------------------------
+if ($storageLocation) {
+    $adapter = new \League\Flysystem\Local\LocalFilesystemAdapter($storageLocation);
+} else {
+    $adapter = new \League\Flysystem\InMemory\InMemoryFilesystemAdapter();
+}
+
+$filesystem = new \League\Flysystem\Filesystem($adapter);
+
+if ($filesystem) {
+    $store = new \MatthiasMullie\Scrapbook\Adapters\Flysystem($filesystem);
+} else {
+    $store = new \MatthiasMullie\Scrapbook\Adapters\MemoryStore();
+}
+
+// simple-cache implementation
+$cache = new \MatthiasMullie\Scrapbook\Psr16\SimpleCache($store);
+
 /* Basic Usage */
 $issuerBuilder = new IssuerBuilder();
 $metadataProviderBuilder = new MetadataProviderBuilder();
 $metadataProviderBuilder->setHttpClient($httpClient);
+
+$clientMetadataFileExists = $filesystem->fileExists($clientMetadataFile);
+if (! $clientMetadataFileExists) {
+    // Client metadata file not found, creating...
+    $data = [
+        'client_id' => $clientId,
+        'client_name' => $clientName,
+        'client_secret' => $clientSecret,
+        'redirect_uris' => $clientRedirectUris,
+        'token_endpoint_auth_method' => 'client_secret_basic', // the auth method tor the token endpoint
+    ];
+
+    $filesystem->write($clientMetadataFile, json_encode($data, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
+}
+
+// Reading client metadata from file
+$clientData = json_decode($filesystem->read($clientMetadataFile), true, 512, JSON_THROW_ON_ERROR);
 // =============================================================================
 
 
@@ -75,10 +131,10 @@ if ($issuerUrl !== '' && filter_var($issuerUrl, FILTER_VALIDATE_URL)) {
         ->setMetadataProviderBuilder($metadataProviderBuilder)
         ->build($openidDiscoveryUrl); // @throws \Http\Discovery\Exception | \Facile\OpenIDClient\Exception\ExceptionInterface
 
-    $config = $issuer->getMetadata()->toArray();
+    $issuerConfig = $issuer->getMetadata()->toArray();
 }
 
-$outputState = empty($issuerUrl) || empty($config) ? '' : 'hidden';
+$outputState = empty($issuerUrl) || empty($issuerConfig) ? '' : 'hidden';
 
 if ($isRedirect) {
 }
@@ -90,7 +146,11 @@ $content = vsprintf($homepage, [
     '%1$s Show Form' => ! isset($exception) && $outputState ? 'hidden' : '',
     '%2$s Show Output' => $outputState ? '' : 'hidden',
     '%3$s Issuer URL' => $issuerUrl,
-    '%4$s OIDC Config' => isset($config) ? var_export($config, true) : '',
+    '%4$s OIDC Config' => isset($issuerConfig) ? var_export($issuerConfig, true) : '',
+    '%5$s Client Metadata File' => $clientMetadataFile,
+    '%6$s Client Metadata File exists' => $clientMetadataFileExists ? '▶️' : '⏺️',
+    '%7$s Client Metadata' => var_export($clientData, true),
+
 ]);
 $response->getBody()->write($content);
 // =============================================================================
@@ -169,6 +229,13 @@ __halt_compiler();<!doctype html>
                     <details>
                         <summary>OIDC Provider Configuration</summary>
                         <pre><code>%4$s</code></pre>
+                    </details>
+                </li>
+                <li>
+                    Reading client metadata from file: <code>%5$s</code> %6$s
+                    <details>
+                        <summary>Client metadata</summary>
+                        <pre><code>%7$s</code></pre>
                     </details>
                 </li>
             </ol>
