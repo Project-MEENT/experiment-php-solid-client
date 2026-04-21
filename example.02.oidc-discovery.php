@@ -1,7 +1,7 @@
 <?php
 
 /**
- * This file contains an example of how to discover OIDC endpoints from an issuer.
+ * Example of how to discover OIDC endpoints from an issuer.
  *
  * Given an OIDC issuer URL, this example demonstrates fetching the OpenID Connect
  * configuration from the issuer's /.well-known/openid-configuration endpoint.
@@ -62,6 +62,7 @@ $metadataProviderBuilder->setHttpClient($httpClient);
 // =============================================================================
 // Handle requests
 // -----------------------------------------------------------------------------
+// Get issuer from HTTP param
 $issuerUrl = $request->getParsedBody()['issuer']
     ?? $request->getQueryParams()['issuer']
     ?? '';
@@ -128,9 +129,9 @@ __halt_compiler();<!doctype html>
 
 <link
     href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' stroke='%%23000' stroke-width='0' viewBox='-5 -5 110 110'><circle cx='50' cy='50' r='51' fill='%%237C4DFF'/><circle cx='50' cy='50' r='34' fill='%%23F2E205'/><path fill='%%23FFF' stroke-width='2' d='M-1 50h16a38 35.5 0 0027.5 34.45V68.7A20 20 0 0150 30.2a20 20 0 017.5 38.5v15.75A38 35.5 0 0085 50h15A1 1 0 010 50z'/></svg>"
-    rel='icon' title='PDS Interop Logo'>
+    rel='icon' title='PDS Interop Logo' />
 
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mvp.css@1.17.3/mvp.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mvp.css@1.17.3/mvp.min.css" />
 
 <style>
     form { background-color: var(--color-bg-secondary); }
