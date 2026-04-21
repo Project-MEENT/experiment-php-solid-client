@@ -12,8 +12,10 @@
         "ext-mbstring": "*",
         "ext-openssl": "*",
         "ext-pcre": "*",
+        "facile-it/php-openid-client": "^0.4.0",
         "guzzlehttp/guzzle": "^7.10",
         "laminas/laminas-diactoros": "^3.8",
+        "league/flysystem": "^3.33",
         "sweetrdf/easyrdf": "^1.19"
     },
     "require-dev": {
