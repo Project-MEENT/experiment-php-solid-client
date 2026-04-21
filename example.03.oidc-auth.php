@@ -39,6 +39,162 @@ if (class_exists(\Whoops\Run::class) && ! isset($whoops)) {
 
 
 // =============================================================================
+// Debugging and Demo functions
+// -----------------------------------------------------------------------------
+set_error_handler(function ($errorCode, $error, $errorFile, $lineNumber) {
+    throw new \ErrorException($error, 0, $errorCode, $errorFile, $lineNumber);
+});
+
+function exceptionToHtml($exception)
+{
+    $parts = explode('\\', get_class($exception));
+    $baseClass = array_pop($parts);
+    $namespace = implode('</span>\\<span style="color: grey;">', $parts);
+    $trace = $exception->getTrace();
+    $hint = null;
+    if (isset($trace[0]['args'][0])
+        && is_array($trace[0]['args'][0])
+        && isset($trace[0]['args'][0]['hint'])
+    ) {
+        $hint = $trace[0]['args'][0]['hint'];
+    }
+
+    return vsprintf(<<<'HTML'
+<span style="color: grey;">%s</span>
+\<b style="color: crimson">%s</b>
+: <b style="color: lightpink;">%s</b><br>
+%s
+HTML
+        ,
+        [
+            $namespace,
+            $baseClass,
+            htmlentities(urldecode($exception->getMessage())),
+            $hint ? '<small>(' . $hint . ')</small>' : '',
+        ]);
+}
+
+function error($reason, $message = '', $context = null)
+{
+    $dump = '';
+    $origin = [
+        'file' => 'unknown',
+        'line' => 'unknown',
+    ];
+    $trigger = '';
+
+    if ($reason instanceof \Exception) {
+        $exception = $reason;
+        $stack = $exception->getTrace();
+        array_walk($stack, function ($trace) use (&$origin, &$dump) {
+            findHttpResponse($trace, $origin, $dump);
+        });
+
+        while ($exception->getPrevious()) {
+            $exception = $exception->getPrevious();
+            $trigger = 'Triggered by: ' . exceptionToHtml($exception);
+
+            $stack = $exception->getTrace();
+            array_walk($stack, function ($trace) use (&$origin, &$dump) {
+                findHttpResponse($trace, $origin, $dump);
+            });
+        }
+
+        $reason = exceptionToHtml($reason);
+    }
+
+    if ($context) {
+        $dump .= '<hr style="margin: 1em 0; color: crimson;">';
+        ob_start();
+        var_dump($context);
+        $dump .= ob_get_clean();
+    }
+
+    echo vsprintf(/** @lang HTML */ <<<'HTML'
+<!doctype html>
+<html color-mode="user" lang="en">
+<meta charset="utf-8">
+
+<link
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' stroke='%%23000' stroke-width='0' viewBox='-5 -5 110 110'><circle cx='50' cy='50' r='51' fill='%%237C4DFF'/><circle cx='50' cy='50' r='34' fill='%%23F2E205'/><path fill='%%23FFF' stroke-width='2' d='M-1 50h16a38 35.5 0 0027.5 34.45V68.7A20 20 0 0150 30.2a20 20 0 017.5 38.5v15.75A38 35.5 0 0085 50h15A1 1 0 010 50z'/></svg>"
+    rel='icon' title='PDS Interop Logo' />
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mvp.css@1.17.3/mvp.min.css" />
+
+<style>
+    form { background-color: var(--color-bg-secondary); }
+    title { display: inline; }
+    .card {
+        background-color: var(--color-accent);
+        border-radius: 10px;
+        padding: 10px;
+    }
+</style>
+<header>
+    <h1><title>OIDC Server Tokens Example</title></h1>
+    <p>
+        This example demonstrates how to authenticate a user with OpenID Connect to get tokens.
+    </p>
+</header>
+<main>
+    <section>
+    <div style="padding: 0 1em; border: 1px solid crimson; border-radius: 4px; background-color: #8884;">
+        <h3 style="margin-bottom: 0;">
+            <span style="background-color: crimson;color:white;border-radius: 4px;">&nbsp;Error&nbsp;</span>
+            %s
+        </h3>
+        <small>%s</small>
+        <p>%s</p>
+        %s
+        <!-- dump -->
+        %s
+    </div>
+    </section>
+</main>
+<footer></footer>
+<script>
+</script>
+</html>
+HTML, [
+        $message,
+        $origin['file'] . ':' . $origin['line'],
+        $reason,
+        $trigger,
+        $dump
+    ]);
+}
+
+function findHttpResponse($trace, &$origin, &$dump)
+{
+    if ($origin['file'] === 'unknown' && isset($trace['file']) && $trace['file'] === __FILE__) {
+        $origin = [
+            'file' => $trace['file'],
+            'line' => $trace['line'],
+        ];
+    }
+
+    if (
+        $dump === '' && isset($trace['args'][0])
+        && $trace['args'][0] instanceof \Psr\Http\Message\MessageInterface
+    ) {
+        $message = $trace['args'][0]->getBody()->__toString();
+        if (empty($message)) {
+            $message = '<small><i>Response is empty </i></small>';
+        } else {
+            $message = htmlentities($message);
+    }
+        $dump .= ''
+            . '<hr style="margin: 1em 0; color: crimson;">'
+            . '<b>HTTP Message Dump:</b>'
+            . '<pre style="white-space: pre-wrap; word-break: break-word;">'
+            . $message
+            . '</pre>';
+    }
+}
+// =============================================================================
+
+
+// =============================================================================
 // Config
 // -----------------------------------------------------------------------------
 $storageLocation = __DIR__ . '/build/storage/';
