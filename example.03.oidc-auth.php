@@ -33,7 +33,7 @@ $response = $response ?? new Response();
 // -----------------------------------------------------------------------------
 // Use Pretty error pages if dev dependencies are installed
 // -----------------------------------------------------------------------------
-if (class_exists(\Whoops\Run::class) && ! isset($whoops)) {
+if (class_exists('\\Whoops\\Run') && ! isset($whoops)) {
     $handler = new \Whoops\Handler\PrettyPageHandler;
     $whoops = new \Whoops\Run;
     $whoops->pushHandler($handler);
@@ -63,19 +63,15 @@ function exceptionToHtml($exception)
         $hint = $trace[0]['args'][0]['hint'];
     }
 
-    return vsprintf(<<<'HTML'
-<span style="color: grey;">%s</span>
-\<b style="color: crimson">%s</b>
-: <b style="color: lightpink;">%s</b><br>
-%s
-HTML
-        ,
+    return vsprintf(
+        '<span style="color: grey;">%s</span>\<b style="color: crimson">%s</b>: <b style="color: lightpink;">%s</b><br>%s',
         [
             $namespace,
             $baseClass,
             htmlentities(urldecode($exception->getMessage())),
             $hint ? '<small>(' . $hint . ')</small>' : '',
-        ]);
+        ]
+    );
 }
 
 function error($reason, $message = '', $context = null)
@@ -89,6 +85,7 @@ function error($reason, $message = '', $context = null)
 
     if ($reason instanceof \Exception) {
         $exception = $reason;
+
         $stack = $exception->getTrace();
         array_walk($stack, function ($trace) use (&$origin, &$dump) {
             findHttpResponse($trace, $origin, $dump);
@@ -164,7 +161,7 @@ HTML, [
         $origin['file'] . ':' . $origin['line'],
         $reason,
         $trigger,
-        $dump
+        $dump,
     ]);
 }
 
@@ -186,7 +183,7 @@ function findHttpResponse($trace, &$origin, &$dump)
             $message = '<small><i>Response is empty </i></small>';
         } else {
             $message = htmlentities($message);
-    }
+        }
         $dump .= ''
             . '<hr style="margin: 1em 0; color: crimson;">'
             . '<b>HTTP Message Dump:</b>'
@@ -227,7 +224,7 @@ $storageLocation = __DIR__ . '/build/storage/';
 // -----------------------------------------------------------------------------
 $clientConfigFile = 'client_id.json';
 
-$clientServer = $request->getUri()->getScheme() . '://' . $request->getUri()->getHost() . ':' . $request->getUri()->getPort();
+$clientServer = $request->getUri()->getScheme() . '://' . $request->getUri()->getHost() . ($request->getUri()->getPort() ? ':' . $request->getUri()->getPort() : '');
 // Redirect URI is the request URL, including port and path, excluding query param
 $clientRedirectUri = $request->getUri()->withQuery('')->__toString();
 
@@ -290,7 +287,11 @@ if (! $clientConfigFileExists) {
         'token_endpoint_auth_method' => 'client_secret_basic', // the auth method tor the token endpoint
     ];
 
-    $filesystem->write($clientConfigFile, json_encode($data, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
+    $filesystem->write($clientConfigFile, json_encode($data,
+          JSON_PRETTY_PRINT
+        | JSON_THROW_ON_ERROR
+        | JSON_UNESCAPED_SLASHES // Don't escape slashes `/`.
+    ));
 }
 
 // Reading client metadata from file
@@ -562,8 +563,10 @@ $content = vsprintf($homepage, [
     '%5$s Client Data File' => $clientConfigFile,
     '%6$s Client Data File exists' => $clientConfigFileExists ? '▶️' : '⏺️',
     '%7$s Client Data' => var_export($clientConfig, true),
-    '%8$s Issuer Metadata File' => $clientMetadataFile,
-    '%9$s Issuer Metadata File exists' => $clientMetadataFileExists ? '▶️' : '⏺',
+    '%8$s Issuer Metadata File' => $clientMetadataFile ?? 'N/A',
+    '%9$s Issuer Metadata File exists' => isset($clientMetadataFileExists)
+    ? ($clientMetadataFileExists ? '▶️' : '⏺')
+    : 'N/A',
     '%10$s Issuer Metadata' => isset($registeredClaims) ? var_export($registeredClaims, true) : '',
     '%11$s Redirect URI' => $redirectAuthorizationUri ?? '',
     '%12$s ID Token Verified' => isset($idTokenVerified)
@@ -595,6 +598,7 @@ foreach ($response->getHeaders() as $name => $values) {
     }
 }
 
+header_remove('X-Powered-By');
 echo trim($response->getBody());
 exit;
 // =============================================================================
