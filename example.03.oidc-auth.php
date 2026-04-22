@@ -42,6 +42,12 @@ use Psr\SimpleCache\CacheInterface;
 // =============================================================================
 // Bootstrap
 // -----------------------------------------------------------------------------
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+ob_start();
+session_start();
+
 require_once __DIR__ . '/vendor/autoload.php';
 
 // -----------------------------------------------------------------------------
@@ -65,7 +71,7 @@ if (class_exists('\\Whoops\\Run') && ! isset($whoops)) {
 // =============================================================================
 // Debugging and Demo functions
 // -----------------------------------------------------------------------------
-set_error_handler(function ($errorCode, $error, $errorFile, $lineNumber) {
+set_error_handler(static function ($errorCode, $error, $errorFile, $lineNumber) {
     throw new \ErrorException($error, 0, $errorCode, $errorFile, $lineNumber);
 });
 
@@ -107,7 +113,7 @@ function error($reason, $message = '', $context = null)
         $exception = $reason;
 
         $stack = $exception->getTrace();
-        array_walk($stack, function ($trace) use (&$origin, &$dump) {
+        array_walk($stack, static function ($trace) use (&$origin, &$dump) {
             findHttpResponse($trace, $origin, $dump);
         });
 
@@ -116,7 +122,7 @@ function error($reason, $message = '', $context = null)
             $trigger = 'Triggered by: ' . exceptionToHtml($exception);
 
             $stack = $exception->getTrace();
-            array_walk($stack, function ($trace) use (&$origin, &$dump) {
+            array_walk($stack, static function ($trace) use (&$origin, &$dump) {
                 findHttpResponse($trace, $origin, $dump);
             });
         }
@@ -355,7 +361,7 @@ $stateTtlSeconds = 300;
 
 
 // =============================================================================
-// Create Client
+// Create HTTP Client
 // -----------------------------------------------------------------------------
 $httpClientConfig = [
     // Allow self-signed certificates for local development
@@ -366,7 +372,7 @@ $httpClientConfig = [
 $httpClient = new Client($httpClientConfig);
 
 // -----------------------------------------------------------------------------
-// Setup cache and storage
+// Create FileSystem
 // -----------------------------------------------------------------------------
 if ($storageLocation) {
     $adapter = new \League\Flysystem\Local\LocalFilesystemAdapter($storageLocation);
@@ -376,6 +382,9 @@ if ($storageLocation) {
 
 $filesystem = new \League\Flysystem\Filesystem($adapter);
 
+// -----------------------------------------------------------------------------
+// Create Cache Store
+// -----------------------------------------------------------------------------
 if ($filesystem) {
     $store = new \MatthiasMullie\Scrapbook\Adapters\Flysystem($filesystem);
 } else {
@@ -385,6 +394,7 @@ if ($filesystem) {
 // simple-cache implementation
 $cache = new \MatthiasMullie\Scrapbook\Psr16\SimpleCache($store);
 
+// -----------------------------------------------------------------------------
 /* Basic Usage */
 $issuerBuilder = new IssuerBuilder();
 $metadataProviderBuilder = new MetadataProviderBuilder();
@@ -440,7 +450,7 @@ if ($issuerUrl !== '' && filter_var($issuerUrl, FILTER_VALIDATE_URL)) {
     $issuerConfig = $issuer->getMetadata()->toArray();
 }
 
-$outputState = empty($issuerUrl) || empty($issuerConfig) ? '' : 'hidden';
+$showOutput = ! empty($issuerUrl) || ! empty($issuerConfig) || $isRedirect;
 
 // RFC9449 - DPoP - Section 5.  DPoP Access Token Request
 // Initialise DPoP key pair (stored in session so the same key is reused across the redirect round-trip).
@@ -483,7 +493,7 @@ if (isset($issuer)) {
         } catch (\Facile\OpenIDClient\Exception\ExceptionInterface $e) {
             // InvalidArgumentException(Issuer does not support dynamic client registration)
             // RuntimeException(Unable to encode client metadata | Unable to register OpenID client | Registration response did not return a client_id field)
-            error($e, 'Registration failed');
+            error($e, 'Dynamic registration failed');
             exit;
         }
 
@@ -502,8 +512,9 @@ if (isset($issuer)) {
 }
 
 $authorizationServiceBuilder = new AuthorizationServiceBuilder();
-$authorizationServiceBuilder->setHttpClient($httpClient);
-$authorizationService = $authorizationServiceBuilder->build();
+$authorizationService = $authorizationServiceBuilder
+    ->setHttpClient($httpClient)
+    ->build();
 
 if (isset($client)) {
     // At this point there is a registered client, but it is not authenticated yet.
@@ -531,7 +542,7 @@ if ($isRedirect) {
     // At this point the user is redirected back to the application from the authorization server.
     // The authorization server will redirect the user back to the application with a code or error parameter.
 
-    // The error parameter is set when something has gone wrong.
+    // The error parameter is set when something has gone wrong on the OP side.
     if (isset($request->getQueryParams()['error'])) {
         error($request->getQueryParams()['error'], 'Provider returned an error', $request->getQueryParams());
         exit;
@@ -573,8 +584,8 @@ if ($isRedirect) {
         }
     }
 
-    if ( isset($error) ) {
-        error($error, 'Invalid or expired state', $request->getQueryParams());
+    if ( isset($error) || ! isset($payload)) {
+        error($error ?? 'Could not parse JWT Payload', 'Invalid or expired state', $request->getQueryParams());
         exit;
     }
 
@@ -598,10 +609,11 @@ if ($isRedirect) {
         exit;
     }
 
-    $client = $clientBuilder
-        ->setIssuer($issuer)
+    $clientBuilder = $clientBuilder
         ->setClientMetadata($clientMetadata)
-        ->build();
+        ->setIssuer($issuer);
+
+    $client = $clientBuilder->build();
 
     // On success, the token endpoint returns tokens
     try {
@@ -616,11 +628,7 @@ if ($isRedirect) {
         if ($e->getPrevious()) {
             // Response could not be parsed as JSON
             $trace = $e->getPrevious()->getTrace();
-            if (isset($trace[0]['args'][0])) {
-                $responseBody = $trace[0]['args'][0];
-            } else {
-                $responseBody = 'Could not retrieve response body';
-            }
+            $responseBody = $trace[0]['args'][0] ?? 'Could not retrieve response body';
         } else {
             // Parse was successful, but the response is not an array
             $responseBody = null;
@@ -661,7 +669,7 @@ if ($isRedirect) {
             if (count($parts) === 3) {
                 $payload = base64UrlDecode($parts[1]);
 
-                $claims = json_decode($payload, true);
+                $claims = json_decode($payload, true, 512, JSON_THROW_ON_ERROR);
 
                 if (is_array($claims)) {
                     $idTokenClaims = array_merge($idTokenClaims, $claims);
@@ -682,8 +690,8 @@ $fileHandle = fopen(__FILE__, 'rb');
 fseek($fileHandle, __COMPILER_HALT_OFFSET__);
 $homepage = stream_get_contents($fileHandle);
 $content = vsprintf($homepage, [
-    '%1$s Show Form' => ! isset($exception) && $outputState ? 'hidden' : '',
-    '%2$s Show Output' => $outputState ? '' : 'hidden',
+    '%1$s Show Form' => ! isset($exception) && $showOutput ? 'hidden' : '',
+    '%2$s Show Output' => $showOutput ? '' : 'hidden',
     '%3$s Issuer URL' => $issuerUrl,
     '%4$s OIDC Config' => isset($issuerConfig) ? var_export($issuerConfig, true) : '',
     '%5$s Client Data File' => $clientConfigFile,
@@ -691,10 +699,12 @@ $content = vsprintf($homepage, [
     '%7$s Client Data' => var_export($clientConfig, true),
     '%8$s Issuer Metadata File' => $clientMetadataFile ?? 'N/A',
     '%9$s Issuer Metadata File exists' => isset($clientMetadataFileExists)
-    ? ($clientMetadataFileExists ? '▶️' : '⏺')
+    ? ($clientMetadataFileExists ? '▶️' : '⏺️')
     : 'N/A',
     '%10$s Issuer Metadata' => isset($registeredClaims) ? var_export($registeredClaims, true) : '',
-    '%11$s Redirect URI' => $redirectAuthorizationUri ?? '',
+    '%11$s Redirect URI' => !empty($redirectAuthorizationUri)
+        ? '<p><em>Usually this would be an automatic redirect, but it is shown here for demonstration purposes.</em> Visit redirect URI:</p><a href="'.$redirectAuthorizationUri.'">'.$redirectAuthorizationUri.'</a>'
+        : '<p>Received redirect from referrer</p>',
     '%12$s ID Token Verified' => isset($idTokenVerified)
         ? ($idTokenVerified
             ? '✅'
@@ -750,21 +760,17 @@ __halt_compiler();<!doctype html>
         padding: 10px;
     }
 
-    #redirectAuthorizationUri a {
+    .redirectUri a {
         max-width: calc( var(--width-content) / 2 );
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
     }
 
-    #redirectAuthorizationUri a:hover {
+    .redirectUri a:hover {
         overflow: visible;
         white-space: normal;
         word-break: break-word;
-    }
-
-    #redirectAuthorizationUri:has(a[href=""]) {
-        display: none;
     }
 </style>
 <header>
@@ -815,11 +821,8 @@ __halt_compiler();<!doctype html>
                         <pre><code>%10$s</code></pre>
                     </details>
                 </li>
-                <li id="redirectAuthorizationUri">
-                    <p>
-                    <em>Usually this would be an automatic redirect, but it is shown here for demonstration purposes.</em> Visit redirect URI:
-                    </p>
-                    <a href="%11$s">%11$s</a>
+                <li class="redirectUri">
+                    %11$s
                 </li>
                 <li>
                     ID Token claims %12$s
