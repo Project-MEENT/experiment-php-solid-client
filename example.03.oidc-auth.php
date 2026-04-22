@@ -9,15 +9,35 @@
 
 namespace Potherca\Examples\Solid;
 
+use Facile\JoseVerifier\JWK\JwksProviderBuilder;
+use Facile\OpenIDClient\AuthMethod\AuthMethodFactory;
+use Facile\OpenIDClient\AuthMethod\AuthMethodInterface;
+use Facile\OpenIDClient\AuthMethod\ClientSecretBasic;
+use Facile\OpenIDClient\AuthMethod\ClientSecretJwt;
+use Facile\OpenIDClient\AuthMethod\ClientSecretPost;
+use Facile\OpenIDClient\AuthMethod\None;
+use Facile\OpenIDClient\AuthMethod\PrivateKeyJwt;
+use Facile\OpenIDClient\AuthMethod\SelfSignedTLSClientAuth;
+use Facile\OpenIDClient\AuthMethod\TLSClientAuth;
 use Facile\OpenIDClient\Client\ClientBuilder;
+use Facile\OpenIDClient\Client\ClientInterface;
 use Facile\OpenIDClient\Client\Metadata\ClientMetadata;
 use Facile\OpenIDClient\Issuer\IssuerBuilder;
 use Facile\OpenIDClient\Issuer\Metadata\Provider\MetadataProviderBuilder;
 use Facile\OpenIDClient\Service\Builder\AuthorizationServiceBuilder;
 use Facile\OpenIDClient\Service\Builder\RegistrationServiceBuilder;
+use Facile\OpenIDClient\Token\IdTokenVerifierBuilder;
 use GuzzleHttp\Client;
+use Jose\Component\Core\AlgorithmManager;
+use Jose\Component\Core\JWK;
+use Jose\Component\KeyManagement\JWKFactory;
+use Jose\Component\Signature\Algorithm\ES256;
+use Jose\Component\Signature\JWSBuilder;
+use Jose\Component\Signature\Serializer\CompactSerializer;
 use Laminas\Diactoros\Response;
 use Laminas\Diactoros\ServerRequestFactory;
+use Psr\Http\Message\RequestInterface;
+use Psr\SimpleCache\CacheInterface;
 
 // =============================================================================
 // Bootstrap
@@ -196,8 +216,103 @@ function findHttpResponse($trace, &$origin, &$dump)
 
 
 // =============================================================================
-// Utility functions
+// Utility classes and functions
 // -----------------------------------------------------------------------------
+final class DpopAuthMethod implements AuthMethodInterface
+{
+    public function __construct(
+        private AuthMethodInterface $authMethod,
+        private DpopProofFactory $dpopProofFactory
+    ) {}
+
+    public function getSupportedMethod(): string
+    {
+        return $this->authMethod->getSupportedMethod();
+    }
+
+    public function createRequest(RequestInterface $request, ClientInterface $client, array $claims): RequestInterface
+    {
+        $request = $this->authMethod->createRequest($request, $client, $claims);
+
+        $dpopProof = $this->dpopProofFactory->createProofForRequest($request);
+        $_SESSION['last_dpop_proof'] = $dpopProof;
+
+        return $request->withHeader('DPoP', $dpopProof);
+    }
+}
+
+final class DpopProofFactory
+{
+    private const SESSION_KEY = 'dpop_private_jwk';
+
+    private function __construct(private JWK $privateJwk) {}
+
+    public static function fromSession(): self
+    {// @CHECKME: Is there a better wat that using $_SESSION ? &$session param? Separate session object?
+        $storedKey = $_SESSION[self::SESSION_KEY] ?? null;
+
+        if (! is_array($storedKey) || ! isset($storedKey['kty'])) {
+            $jwk = JWKFactory::createECKey('P-256');
+            $_SESSION[self::SESSION_KEY] = $jwk->all();
+        } else {
+            $jwk = new JWK($storedKey);
+        }
+
+        return new self($jwk);
+    }
+
+    public function getPublicJwkThumbprint(): string
+    {
+        return $this->privateJwk->toPublic()->thumbprint('sha256');
+    }
+
+    public function createProofForRequest(RequestInterface $request, ?string $dpopNonce = null): string
+    {
+        $claims = [
+            // RFC9449 - DPoP - Section 4.2: jti MUST be unique with negligible collision probability.
+            'jti' => bin2hex(random_bytes(16)),
+            'htm' => strtoupper($request->getMethod()),
+            // RFC9449 - DPoP - Section 4.2: htu excludes query and fragment components.
+            'htu' => (string) $request->getUri()->withQuery('')->withFragment(''),
+            'iat' => time(),
+        ];
+
+        if ($dpopNonce !== null) {
+            $claims['nonce'] = $dpopNonce;
+        }
+
+        // RFC9449 - DPoP - Section 7.1.  Resource Access Requests
+        // When a request presents `Authorization: DPoP <access_token>`, the proof must
+        // also carry the `ath` claim from RFC9449 Section 4.2.
+        $authorizationHeader = $request->getHeaderLine('Authorization');
+        if (str_starts_with($authorizationHeader, 'DPoP ')) {
+            $accessToken = substr($authorizationHeader, 5);
+
+            if ($accessToken !== '') {
+                $claims['ath'] = rtrim(strtr(base64_encode(hash('sha256', $accessToken, true)), '+/', '-_'), '=');
+            }
+        }
+
+        $protectedHeader = [
+            'typ' => 'dpop+jwt',
+            'alg' => 'ES256',
+            // RFC9449 - DPoP - Section 4.2: jwk MUST contain the public key, never the private key.
+            'jwk' => $this->privateJwk->toPublic()->all(),
+        ];
+
+        $jwsBuilder = new JWSBuilder(new AlgorithmManager([new ES256()]));
+        $payload = json_encode($claims, JSON_THROW_ON_ERROR);
+
+        $jws = $jwsBuilder
+            ->create()
+            ->withPayload($payload)
+            ->addSignature($this->privateJwk, $protectedHeader)
+            ->build();
+
+        return (new CompactSerializer())->serialize($jws, 0);
+    }
+}
+
 function base64UrlDecode($encodedData) {
     $padding = (4 - strlen($encodedData) % 4) % 4;
     $encodedPayload = strtr($encodedData, '-_', '+/') . str_repeat('=', $padding);
@@ -327,8 +442,22 @@ if ($issuerUrl !== '' && filter_var($issuerUrl, FILTER_VALIDATE_URL)) {
 
 $outputState = empty($issuerUrl) || empty($issuerConfig) ? '' : 'hidden';
 
+// RFC9449 - DPoP - Section 5.  DPoP Access Token Request
+// Initialise DPoP key pair (stored in session so the same key is reused across the redirect round-trip).
+$dpopProofFactory = DpopProofFactory::fromSession();
+$dpopAuthMethodFactory = new AuthMethodFactory([
+    new DpopAuthMethod(new ClientSecretBasic(), $dpopProofFactory),
+    new DpopAuthMethod(new ClientSecretJwt(), $dpopProofFactory),
+    new DpopAuthMethod(new ClientSecretPost(), $dpopProofFactory),
+    new DpopAuthMethod(new None(), $dpopProofFactory),
+    new DpopAuthMethod(new PrivateKeyJwt(), $dpopProofFactory),
+    new DpopAuthMethod(new TLSClientAuth(), $dpopProofFactory),
+    new DpopAuthMethod(new SelfSignedTLSClientAuth(), $dpopProofFactory),
+]);
+
 $clientBuilder = new ClientBuilder();
 $clientBuilder = $clientBuilder
+    ->setAuthMethodFactory($dpopAuthMethodFactory)
     ->setHttpClient($httpClient);
 
 if (isset($issuer)) {
@@ -364,12 +493,9 @@ if (isset($issuer)) {
 
     $clientMetadata = ClientMetadata::fromArray($registeredClaims);
 
-    // @TODO: Create DPoP Proof Factory // $dpopProofFactory = ...;
-
     $clientBuilder = $clientBuilder
-        ->setIssuer($issuer)
         ->setClientMetadata($clientMetadata)
-        // @TODO:->setAuthMethodFactory($dpopProofFactory)
+        ->setIssuer($issuer)
     ;
 
     $client = $clientBuilder->build();
@@ -575,6 +701,8 @@ $content = vsprintf($homepage, [
             : '❌ <strong>(WARNING: id_token signature verification failed, claims should not be trusted!)<strong>')
         : 'N/A',
     '%13$s ID Token Claims' => isset($idTokenClaims) ? var_export($idTokenClaims, true) : '',
+    '%14$s Public DPoP JWK thumbprint' => isset($dpopProofFactory) ? $dpopProofFactory->getPublicJwkThumbprint() : '',
+    '%15$s Last DPoP proof' => isset($_SESSION['last_dpop_proof']) ? $_SESSION['last_dpop_proof'] : '',
 ]);
 $response->getBody()->write($content);
 // =============================================================================
@@ -696,6 +824,10 @@ __halt_compiler();<!doctype html>
                 <li>
                     ID Token claims %12$s
                     <pre><code>%13$s</code></pre>
+                </li>
+                <li>
+                    <p>DPoP public JWK thumbprint (RFC7638) <code>%14$s</code></p>
+                    Last DPoP proof sent to token endpoint<pre><code>%15$s</code></pre>
                 </li>
             </ol>
         </output>
