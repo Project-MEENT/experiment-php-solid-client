@@ -249,23 +249,13 @@ final class DpopAuthMethod implements AuthMethodInterface
 
 final class DpopProofFactory
 {
-    private const SESSION_KEY = 'dpop_private_jwk';
+    public const SESSION_KEY = 'dpop_private_jwk';
 
-    private function __construct(private JWK $privateJwk) {}
-
-    public static function fromSession(): self
-    {// @CHECKME: Is there a better wat that using $_SESSION ? &$session param? Separate session object?
-        $storedKey = $_SESSION[self::SESSION_KEY] ?? null;
-
-        if (! is_array($storedKey) || ! isset($storedKey['kty'])) {
-            $jwk = JWKFactory::createECKey('P-256');
-            $_SESSION[self::SESSION_KEY] = $jwk->all();
-        } else {
-            $jwk = new JWK($storedKey);
-        }
-
-        return new self($jwk);
-    }
+    public function __construct(
+        private JWK $privateJwk,
+        private JWSBuilder $jwsBuilder,
+        private CompactSerializer $compactSerializer
+    ) {}
 
     public function getPublicJwkThumbprint(): string
     {
@@ -306,16 +296,15 @@ final class DpopProofFactory
             'jwk' => $this->privateJwk->toPublic()->all(),
         ];
 
-        $jwsBuilder = new JWSBuilder(new AlgorithmManager([new ES256()]));
         $payload = json_encode($claims, JSON_THROW_ON_ERROR);
 
-        $jws = $jwsBuilder
+        $jws = $this->jwsBuilder
             ->create()
             ->withPayload($payload)
             ->addSignature($this->privateJwk, $protectedHeader)
             ->build();
 
-        return (new CompactSerializer())->serialize($jws, 0);
+        return $this->compactSerializer->serialize($jws, 0);
     }
 }
 
@@ -396,9 +385,10 @@ $cache = new \MatthiasMullie\Scrapbook\Psr16\SimpleCache($store);
 
 // -----------------------------------------------------------------------------
 /* Basic Usage */
-$issuerBuilder = new IssuerBuilder();
 $metadataProviderBuilder = new MetadataProviderBuilder();
 $metadataProviderBuilder->setHttpClient($httpClient);
+$issuerBuilder = new IssuerBuilder();
+$issuerBuilder = $issuerBuilder->setMetadataProviderBuilder($metadataProviderBuilder);
 
 // Step 1. Create client for issuer
 $clientConfigFileExists = $filesystem->fileExists($clientConfigFile);
@@ -439,9 +429,7 @@ if ($issuerUrl !== '' && filter_var($issuerUrl, FILTER_VALIDATE_URL)) {
     $issuerUrl = rtrim($issuerUrl, '/');
     $openidDiscoveryUrl = $issuerUrl . '/.well-known/openid-configuration';
     try {
-        $issuer = $issuerBuilder
-            ->setMetadataProviderBuilder($metadataProviderBuilder)
-            ->build($openidDiscoveryUrl);
+        $issuer = $issuerBuilder->build($openidDiscoveryUrl);
     } catch (\Facile\OpenIDClient\Exception\ExceptionInterface $e) {
         error($e, 'Failed to discover issuer metadata');
         exit;
@@ -454,7 +442,22 @@ $showOutput = ! empty($issuerUrl) || ! empty($issuerConfig) || $isRedirect;
 
 // RFC9449 - DPoP - Section 5.  DPoP Access Token Request
 // Initialise DPoP key pair (stored in session so the same key is reused across the redirect round-trip).
-$dpopProofFactory = DpopProofFactory::fromSession();
+if (
+    ! isset($_SESSION[DpopProofFactory::SESSION_KEY])
+    || ! is_array($_SESSION[DpopProofFactory::SESSION_KEY])
+    || ! isset($_SESSION[DpopProofFactory::SESSION_KEY]['kty'])) {
+    $jwk = JWKFactory::createECKey('P-256');
+    $_SESSION[DpopProofFactory::SESSION_KEY] = $jwk->all();
+} else {
+    $jwk = new JWK($_SESSION[DpopProofFactory::SESSION_KEY]);
+}
+
+$dpopProofFactory = new DpopProofFactory(
+    $jwk,
+    new JWSBuilder(new AlgorithmManager([new ES256()])),
+    new CompactSerializer()
+);
+
 $dpopAuthMethodFactory = new AuthMethodFactory([
     new DpopAuthMethod(new ClientSecretBasic(), $dpopProofFactory),
     new DpopAuthMethod(new ClientSecretJwt(), $dpopProofFactory),
@@ -601,9 +604,7 @@ if ($isRedirect) {
     $clientMetadata = ClientMetadata::fromArray($registeredClaims);
 
     try {
-        $issuer = $issuerBuilder
-            ->setMetadataProviderBuilder($metadataProviderBuilder)
-            ->build($openidDiscoveryUrl);
+        $issuer = $issuerBuilder->build($openidDiscoveryUrl);
     } catch (\Facile\OpenIDClient\Exception\ExceptionInterface $e) {
         error($e, 'Failed to discover issuer metadata');
         exit;
@@ -697,19 +698,17 @@ $content = vsprintf($homepage, [
     '%5$s Client Data File' => $clientConfigFile,
     '%6$s Client Data File exists' => $clientConfigFileExists ? '▶️' : '⏺️',
     '%7$s Client Data' => var_export($clientConfig, true),
-    '%8$s Issuer Metadata File' => $clientMetadataFile ?? 'N/A',
-    '%9$s Issuer Metadata File exists' => isset($clientMetadataFileExists)
-    ? ($clientMetadataFileExists ? '▶️' : '⏺️')
-    : 'N/A',
+    '%8$s Issuer Metadata File' => $clientMetadataFile ?? '',
+    '%9$s Issuer Metadata File exists' => isset($clientMetadataFileExists) && $clientMetadataFileExists === false
+        ? '⏺️'
+        : '▶️',
     '%10$s Issuer Metadata' => isset($registeredClaims) ? var_export($registeredClaims, true) : '',
     '%11$s Redirect URI' => !empty($redirectAuthorizationUri)
         ? '<p><em>Usually this would be an automatic redirect, but it is shown here for demonstration purposes.</em> Visit redirect URI:</p><a href="'.$redirectAuthorizationUri.'">'.$redirectAuthorizationUri.'</a>'
-        : '<p>Received redirect from referrer</p>',
-    '%12$s ID Token Verified' => isset($idTokenVerified)
-        ? ($idTokenVerified
-            ? '✅'
-            : '❌ <strong>(WARNING: id_token signature verification failed, claims should not be trusted!)<strong>')
-        : 'N/A',
+        : '<p><em>Received redirect from referrer</em></p>',
+    '%12$s ID Token Verified' => isset($idTokenVerified) && $idTokenVerified === false
+        ? '❌ <strong>(WARNING: id_token signature verification failed, claims should not be trusted!)<strong>'
+        : '✅',
     '%13$s ID Token Claims' => isset($idTokenClaims) ? var_export($idTokenClaims, true) : '',
     '%14$s Public DPoP JWK thumbprint' => isset($dpopProofFactory) ? $dpopProofFactory->getPublicJwkThumbprint() : '',
     '%15$s Last DPoP proof' => isset($_SESSION['last_dpop_proof']) ? $_SESSION['last_dpop_proof'] : '',
@@ -753,6 +752,7 @@ __halt_compiler();<!doctype html>
 
 <style>
     form { background-color: var(--color-bg-secondary); }
+    pre > code { word-break: break-word; }
     title { display: inline; }
     .card {
         background-color: var(--color-accent);
