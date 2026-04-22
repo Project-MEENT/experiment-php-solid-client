@@ -346,6 +346,10 @@ $clientSecret = 'my-client-secret';
 // -----------------------------------------------------------------------------
 $stateSigningKey = $clientSecret; // @TODO: Use separate secret (i.e. private key) for signing
 $stateTtlSeconds = 300;
+// -----------------------------------------------------------------------------
+// For certain issuers (like https://solidcommunity.net) PKCE is required, even for  server-to-server calls
+// @FIXME: Decide to either ALWAYS add PKCE, or only for know offeders and/or use PKCE as fallback on failing call.
+$usePkce = true;
 // =============================================================================
 
 
@@ -458,6 +462,7 @@ $dpopProofFactory = new DpopProofFactory(
     new CompactSerializer()
 );
 
+/*/ RFC9449 Section 5: DPoP proof is injected automatically by DpopAuthMethod /*/
 $dpopAuthMethodFactory = new AuthMethodFactory([
     new DpopAuthMethod(new ClientSecretBasic(), $dpopProofFactory),
     new DpopAuthMethod(new ClientSecretJwt(), $dpopProofFactory),
@@ -534,7 +539,19 @@ if (isset($client)) {
 
     $authorizationRequestParams['state'] = $header . '.' . $payload . '.' . $signature;
 
-    // @TODO: Add PKCE?
+    if ($usePkce === true) {
+        /*/ rfc7636 - PKCE - Section 4.1.  Client Creates a Code Verifier /*/
+        $codeVerifier = base64UrlEncode(random_bytes(32));
+        if (! $isRedirect) {
+            $_SESSION['pkce_code_verifier'] = $codeVerifier;
+        }
+        /*/ rfc7636 - PKCE - Section 4.2.  Client Creates the Code Challenge /*/
+        $codeVerifierHash = hash('sha256', $codeVerifier, true);
+        $codeChallenge = base64UrlEncode($codeVerifierHash);
+        /*/ rfc7636 - PKCE - Section 4.3.  Client Sends the Code Challenge with the Authorization Request /*/
+        $authorizationRequestParams['code_challenge'] = $codeChallenge;
+        $authorizationRequestParams['code_challenge_method'] = 'S256'; // RFC7636: clients capable of S256 MUST use S256.;
+    }
 
     $redirectAuthorizationUri = $authorizationService->getAuthorizationUri($client, $authorizationRequestParams);
 }
@@ -551,6 +568,7 @@ if ($isRedirect) {
         exit;
     }
 
+    /*/  rfc7636 - PKCE - Section 4.4.  Server Returns the Code /*/
     // The authorization response must include a non-empty authorization code.
     $authorizationCode = $request->getQueryParams()['code'] ?? null;
     if (! is_string($authorizationCode) || $authorizationCode === '') {
@@ -596,6 +614,18 @@ if ($isRedirect) {
     $issuerUrl = rtrim($payload['issr'], '/');
     $openidDiscoveryUrl = $issuerUrl . '/.well-known/openid-configuration';
 
+    if ($usePkce === true) {
+        /*/ rfc7636 - PKCE - Section 4.5.  Client Sends the Authorization Code and the Code Verifier to the Token Endpoint /*/
+        $codeVerifier = $_SESSION['pkce_code_verifier'] ?? null;
+        $hasValidCodeVerifier = is_string($codeVerifier) && $codeVerifier !== '';
+        if (! $hasValidCodeVerifier) {
+            error($codeVerifier, 'Client has no valid PKCE code_verifier for this authorization response');
+            exit;
+        }
+    }
+
+    /*/ RFC9449 - DPoP - Section 5. DPoP Access Token Request /*/
+    // The token request must include a DPoP header with a valid proof JWT (see RFC9449 Section 4.2 for proof syntax).
     // At this point, post redirect, the client SHOULD already be registered
     $issuerHash = hash('sha256', $issuerUrl);
     $clientMetadataFile = $issuerHash . '/issuer_metadata.json';
@@ -616,15 +646,24 @@ if ($isRedirect) {
 
     $client = $clientBuilder->build();
 
-    // On success, the token endpoint returns tokens
+    /*/ rfc7636 - PKCE - Section 4.6.  Server Verifies code_verifier before Returning the Tokens /*/
+    // On success, the token endpoint returns tokens; on PKCE mismatch, it returns invalid_grant.
     try {
         // Use explicit grant() so this example fully controls what gets sent to the token endpoint.
-        $tokenSet = $authorizationService->grant($client, [
+        $params = [
             'grant_type' => 'authorization_code',
             'code' => $authorizationCode,
             'redirect_uri' => $clientRedirectUri,
-        ]);
+        ];
+
+        if ($usePkce === true) {
+            $params['code_verifier'] = $codeVerifier; // rfc7636 - PKCE - Section 4.5
+        }
+        $tokenSet = $authorizationService->grant($client, $params);
+
+        unset($_SESSION['pkce_code_verifier']);
     } catch (\Facile\OpenIDClient\Exception\ExceptionInterface $e) {
+        unset($_SESSION['pkce_code_verifier']);
         // InvalidArgumentException(Invalid metadata content)
         if ($e->getPrevious()) {
             // Response could not be parsed as JSON
@@ -712,6 +751,10 @@ $content = vsprintf($homepage, [
     '%13$s ID Token Claims' => isset($idTokenClaims) ? var_export($idTokenClaims, true) : '',
     '%14$s Public DPoP JWK thumbprint' => isset($dpopProofFactory) ? $dpopProofFactory->getPublicJwkThumbprint() : '',
     '%15$s Last DPoP proof' => isset($_SESSION['last_dpop_proof']) ? $_SESSION['last_dpop_proof'] : '',
+
+    '%16$s PKCE' => $usePkce
+        ? 'enabled <code>'.($codeVerifier ?? $_SESSION['pkce_code_verifier'] ?? '').'</code> 🔛'
+        : 'disabled 📴'
 ]);
 $response->getBody()->write($content);
 // =============================================================================
@@ -832,6 +875,7 @@ __halt_compiler();<!doctype html>
                     <p>DPoP public JWK thumbprint (RFC7638) <code>%14$s</code></p>
                     Last DPoP proof sent to token endpoint<pre><code>%15$s</code></pre>
                 </li>
+                <li>PKCE %16$s</li>
             </ol>
         </output>
     </section>
