@@ -285,7 +285,7 @@ final class DpopProofFactory
             $accessToken = substr($authorizationHeader, 5);
 
             if ($accessToken !== '') {
-                $claims['ath'] = rtrim(strtr(base64_encode(hash('sha256', $accessToken, true)), '+/', '-_'), '=');
+                $claims['ath'] = base64UrlEncode(hash('sha256', $accessToken, true));
             }
         }
 
@@ -403,7 +403,7 @@ if (! $clientConfigFileExists) {
         'client_name' => $clientName,
         'client_secret' => $clientSecret,
         'redirect_uris' => $clientRedirectUris,
-        'token_endpoint_auth_method' => 'client_secret_basic', // the auth method tor the token endpoint
+        'token_endpoint_auth_method' => 'client_secret_basic', // the auth method for the token endpoint
     ];
 
     $filesystem->write($clientConfigFile, json_encode($data,
@@ -795,8 +795,9 @@ __halt_compiler();<!doctype html>
 
 <style>
     form { background-color: var(--color-bg-secondary); }
-    pre > code { word-break: break-word; }
+    output pre > code { word-break: break-word; }
     title { display: inline; }
+
     .card {
         background-color: var(--color-accent);
         border-radius: 10px;
