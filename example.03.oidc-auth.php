@@ -4,7 +4,7 @@
  * Example of how to authenticate a user with OpenID Connect.
  *
  * Given an OIDC issuer URL, this example demonstrates how to fetch Tokens
- * (Code, Refresh Access) needed to access a private resource.
+ * (Code, Refresh Access) needed to access a protected resource.
  */
 
 namespace Potherca\Examples\Solid;
@@ -369,6 +369,25 @@ function base64UrlDecode($encodedData) {
 function base64UrlEncode($data) {
     return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
 }
+
+function decodeUnsafeJwt(string $jwt): array
+{
+    $claims = [];
+
+    $parts = explode('.', $jwt);
+
+    if (count($parts) === 3) {
+        $payload = base64UrlDecode($parts[1]);
+
+        $encodedPayload = json_decode($payload, true, 512, JSON_THROW_ON_ERROR);
+
+        if (is_array($encodedPayload)) {
+            $claims = $encodedPayload;
+        }
+    }
+
+    return $claims;
+}
 // =============================================================================
 
 
@@ -717,17 +736,18 @@ if ($isRedirect) {
 
     /*/ rfc7636 - PKCE - Section 4.6.  Server Verifies code_verifier before Returning the Tokens /*/
     // On success, the token endpoint returns tokens; on PKCE mismatch, it returns invalid_grant.
+    $params = [
+        'code' => $authorizationCode,
+        'grant_type' => 'authorization_code',
+        'redirect_uri' => $clientRedirectUri,
+    ];
+
+    if ($usePkce === true) {
+        $params['code_verifier'] = $codeVerifier; // rfc7636 - PKCE - Section 4.5
+    }
+
     try {
         // Use explicit grant() so this example fully controls what gets sent to the token endpoint.
-        $params = [
-            'grant_type' => 'authorization_code',
-            'code' => $authorizationCode,
-            'redirect_uri' => $clientRedirectUri,
-        ];
-
-        if ($usePkce === true) {
-            $params['code_verifier'] = $codeVerifier; // rfc7636 - PKCE - Section 4.5
-        }
         $tokenSet = $authorizationService->grant($client, $params);
 
         Session::current()->remove('pkce_code_verifier');
@@ -744,11 +764,10 @@ if ($isRedirect) {
         }
 
         if (str_contains($e->getMessage(), 'invalid_grant')) {
-            error($e, 'Token endpoint rejected code_verifier (invalid_grant)', $responseBody);
-            exit;
+            error($e, 'Token endpoint rejected code_verifier (invalid_grant — PKCE mismatch)', $responseBody);
+        } else {
+            error($e, 'Failed to exchange authorization code for access token');
         }
-
-        error($e, 'Failed to exchange code for access token');
         exit;
     }
 
@@ -773,17 +792,7 @@ if ($isRedirect) {
                 'error' => $e->getMessage(),
             ];
 
-            $parts = explode('.', $idToken);
-
-            if (count($parts) === 3) {
-                $payload = base64UrlDecode($parts[1]);
-
-                $claims = json_decode($payload, true, 512, JSON_THROW_ON_ERROR);
-
-                if (is_array($claims)) {
-                    $idTokenClaims = array_merge($idTokenClaims, $claims);
-                }
-            }
+            $idTokenClaims = array_merge($idTokenClaims, decodeUnsafeJwt($idToken));
         }
     } else {
         error('No id_token returned', 'User is not authenticated');
@@ -794,7 +803,12 @@ if ($isRedirect) {
     // $refreshTokenValue = $tokenSet->getRefreshToken(); // Refresh token, if returned
     // $refreshToken = $authorizationService->refresh($client, $refreshTokenValue);
 }
+// =============================================================================
 
+
+// =============================================================================
+// Create Output
+// -----------------------------------------------------------------------------
 $fileHandle = fopen(__FILE__, 'rb');
 fseek($fileHandle, __COMPILER_HALT_OFFSET__);
 $homepage = stream_get_contents($fileHandle);
@@ -814,9 +828,11 @@ $content = vsprintf($homepage, [
     '%11$s Redirect URI' => !empty($redirectAuthorizationUri)
         ? '<p><em>Usually this would be an automatic redirect, but it is shown here for demonstration purposes.</em> Visit redirect URI:</p><a href="'.$redirectAuthorizationUri.'">'.$redirectAuthorizationUri.'</a>'
         : '<p><em>Received redirect from referrer</em></p>',
-    '%12$s ID Token Verified' => isset($idTokenVerified) && $idTokenVerified === false
-        ? '❌ <strong>(WARNING: id_token signature verification failed, claims should not be trusted!)<strong>'
-        : '✅',
+    '%12$s ID Token Verified' => isset($idTokenVerified)
+        ? $idTokenVerified === false
+            ? '❌ <strong>(WARNING: id_token signature verification failed, claims should not be trusted!)<strong>'
+            : '✅'
+        : '<em>(Not available without session)</em>',
     '%13$s ID Token Claims' => isset($idTokenClaims) ? var_export($idTokenClaims, true) : '',
     '%14$s Public DPoP JWK thumbprint' => $dpopProofFactory->getPublicJwkThumbprint(),
     '%15$s Last DPoP proof' => Session::current()->get('last_dpop_proof') ?? '',
@@ -863,8 +879,9 @@ __halt_compiler();<!doctype html>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mvp.css@1.17.3/mvp.min.css" />
 
 <style>
+    pre > code { white-space: nowrap; }
     form { background-color: var(--color-bg-secondary); }
-    output pre > code { word-break: break-word; }
+    output pre > code { white-space: pre-wrap; word-break: break-word; }
     title { display: inline; }
 
     .card {
