@@ -170,13 +170,12 @@ __halt_compiler();<!doctype html>
             <ol>
                 <li>
                     The OIDC Provider is <code>%3$s</code>
-                    <!--<a href="example.03.oidc-authorize.php?issuer=%3$s">Use this provider in the OIDC Auth example</a>-->
                 </li>
                 <li>OIDC Provider Configuration:
                     <pre><code>%4$s</code></pre>
                 </li>
                 <li>
-                    Use this issuer <a href="example.03.oidc-auth.php?issuer=%3$s">in the OIDC Authorization Code Flow Example</a>
+                    Use this issuer <a href="/oidc-auth/?issuer=%3$s">in the OIDC Authorization Code Flow Example</a>
                 </li>
             </ol>
         </output>

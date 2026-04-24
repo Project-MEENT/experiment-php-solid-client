@@ -162,7 +162,7 @@ __halt_compiler();<!doctype html>
                 </li>
                 <li>
                     The first OIDC issuer is: <code>%1$s</code>
-                    <a href="example.02.oidc-discovery.php?issuer=%1$s">Use this issuer in the OIDC example</a>
+                    <a href="/oidc-discovery/?issuer=%1$s">Use this issuer in the OIDC example</a>
                 </li>
             </ol>
         </output>

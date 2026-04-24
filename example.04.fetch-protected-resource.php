@@ -400,14 +400,16 @@ $storageLocation = __DIR__ . '/build/storage/';
 // -----------------------------------------------------------------------------
 $clientConfigFile = 'client_id.json';
 
-$clientServer = $request->getUri()->getScheme() . '://' . $request->getUri()->getHost() . ($request->getUri()->getPort() ? ':' . $request->getUri()->getPort() : '');
-// @TODO: Use this instead? $clientServer = $request->getUri()->withQuery('')->withFragment('');
-// Redirect URI is the request URL, including port and path, excluding query param
-$clientRedirectUri = $request->getUri()->withQuery('')->__toString();
+$clientServer = $request->getUri()->withFragment('')->withPath('')->withQuery('');
+$clientRedirectUri = $clientServer . '/oidc-protected-access/';
 
 $clientId = $clientServer . '/' . $clientConfigFile;
-$clientName = 'Example Client Name';
-$clientRedirectUris = [$clientRedirectUri];
+$clientName = 'Solid Client Examples in PHP by Potherca';
+$clientRedirectUris = [
+    $clientServer . '/oidc-auth/', // example.03.oidc-auth.php
+    $clientServer . '/oidc-offline-access/', // example.05.fetch-protected-resource-offline.php
+    $clientServer . '/oidc-protected-access/', // example.04.fetch-protected-resource.php
+];
 $clientSecret = 'my-client-secret';
 
 // -----------------------------------------------------------------------------
@@ -1062,7 +1064,7 @@ __halt_compiler();<!doctype html>
                 <li>PKCE %16$s</li>
                 <li data-webid="%17$s">
                     WebID <code>%17$s</code>
-                    <p>Use this WebID <a href="example.05.fetch-protected-resource-offline.php?webid=%17$s">in the Access a protected resource offline Example</a></p>
+                    <p>Use this WebID <a href="/oidc-offline-access/?webid=%17$s">in the Access a protected resource offline Example</a></p>
                 </li>
                 <li>Protected resource<pre><code>%18$s</code></pre></li>
             </ol>
