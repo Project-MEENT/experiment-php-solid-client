@@ -32,7 +32,7 @@ $response = $response ?? new Response();
 // -----------------------------------------------------------------------------
 // Use Pretty error pages if dev dependencies are installed
 // -----------------------------------------------------------------------------
-if (class_exists(\Whoops\Run::class) && ! isset($whoops)) {
+if (class_exists('\\Whoops\\Run') && ! isset($whoops)) {
     $handler = new \Whoops\Handler\PrettyPageHandler;
     $whoops = new \Whoops\Run;
     $whoops->pushHandler($handler);
@@ -42,7 +42,7 @@ if (class_exists(\Whoops\Run::class) && ! isset($whoops)) {
 
 
 // =============================================================================
-// Create Client
+// Create HTTP Client
 // -----------------------------------------------------------------------------
 $httpClientConfig = [
     // Allow self-signed certificates for local development
@@ -53,9 +53,10 @@ $httpClientConfig = [
 $httpClient = new Client($httpClientConfig);
 
 /* Basic Usage */
-$issuerBuilder = new IssuerBuilder();
 $metadataProviderBuilder = new MetadataProviderBuilder();
 $metadataProviderBuilder->setHttpClient($httpClient);
+$issuerBuilder = new IssuerBuilder();
+$issuerBuilder = $issuerBuilder->setMetadataProviderBuilder($metadataProviderBuilder);
 // =============================================================================
 
 
@@ -73,29 +74,27 @@ if ($issuerUrl !== '' && filter_var($issuerUrl, FILTER_VALIDATE_URL)) {
 
     if (isset($issuerBuilder)) {
         // @uses \Facile\OpenIDClient\Issuer\IssuerBuilderInterface
-        $issuer = $issuerBuilder
-            ->setMetadataProviderBuilder($metadataProviderBuilder)
-            ->build($openidDiscoveryUrl); // @throws \Http\Discovery\Exception | \Facile\OpenIDClient\Exception\ExceptionInterface
+        $issuer = $issuerBuilder->build($openidDiscoveryUrl); // @throws \Http\Discovery\Exception | \Facile\OpenIDClient\Exception\ExceptionInterface
 
-        $config = $issuer->getMetadata()->toArray();
+        $issuerConfig = $issuer->getMetadata()->toArray();
     } else {
         // @uses \GuzzleHttp\ClientInterface | \Psr\Http\Client\ClientInterface
         $discoveryResponse = $httpClient->get($openidDiscoveryUrl); // @throws \GuzzleHttp\Exception\GuzzleException
         $contents = $discoveryResponse->getBody()->getContents(); // @throws \RuntimeException
-        $config = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
+        $issuerConfig = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
     }
 }
 
-$outputState = empty($issuerUrl) || empty($config) ? '' : 'hidden';
+$showOutput = ! empty($issuerUrl) || ! empty($issuerConfig);
 
 $fileHandle = fopen(__FILE__, 'rb');
 fseek($fileHandle, __COMPILER_HALT_OFFSET__);
 $homepage = stream_get_contents($fileHandle);
 $content = vsprintf($homepage, [
-    '%1$s Show Form' => ! isset($exception) && $outputState ? 'hidden' : '',
-    '%2$s Show Output' => $outputState ? '' : 'hidden',
+    '%1$s Show Form' => ! isset($exception) && $showOutput ? 'hidden' : '',
+    '%2$s Show Output' => $showOutput ? '' : 'hidden',
     '%3$s Issuer URL' => $issuerUrl,
-    '%4$s OIDC Config' => isset($config) ? var_export($config, true) : '',
+    '%4$s OIDC Config' => isset($issuerConfig) ? var_export($issuerConfig, true) : '',
 ]);
 $response->getBody()->write($content);
 // =============================================================================
@@ -119,6 +118,7 @@ foreach ($response->getHeaders() as $name => $values) {
     }
 }
 
+header_remove('X-Powered-By');
 echo trim($response->getBody());
 exit;
 // =============================================================================
@@ -176,7 +176,7 @@ __halt_compiler();<!doctype html>
                     <pre><code>%4$s</code></pre>
                 </li>
                 <li>
-
+                    Use this issuer <a href="example.03.oidc-auth.php?issuer=%3$s">in the OIDC Authorization Code Flow Example</a>
                 </li>
             </ol>
         </output>

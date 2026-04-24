@@ -1,6 +1,6 @@
 <?php
 
-namespace Potherca\Examples;
+namespace Potherca\Examples\Solid;
 
 use Laminas\Diactoros\Response;
 use Laminas\Diactoros\ServerRequestFactory;
@@ -161,7 +161,7 @@ if (isset($context)) {
                     "status":  {{ status }},
                     "title": "{{ title }}"
                 }
-    JSON_TEMPLATE;
+JSON_TEMPLATE;
 
                 $context = [
                     'content' => 'An error occurred while encoding the response as JSON: ' . $e->getMessage(),

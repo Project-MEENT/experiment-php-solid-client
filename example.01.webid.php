@@ -29,7 +29,7 @@ $response = $response ?? new Response();
 // -----------------------------------------------------------------------------
 // Use Pretty error pages if dev dependencies are installed
 // -----------------------------------------------------------------------------
-if (class_exists(\Whoops\Run::class) && ! isset($whoops)) {
+if (class_exists('\\Whoops\\Run') && ! isset($whoops)) {
     $handler = new \Whoops\Handler\PrettyPageHandler;
     $whoops = new \Whoops\Run;
     $whoops->pushHandler($handler);
@@ -70,7 +70,8 @@ if ($webIdUrl) {
         }
     }
 }
-$outputState = empty($webIdUrl) || empty($issuers) ? '' : 'hidden';
+
+$showOutput = ! empty($issuerUrl) || ! empty($issuerConfig) || $isRedirect;
 
 $fileHandle = fopen(__FILE__, 'rb');
 fseek($fileHandle, __COMPILER_HALT_OFFSET__);
@@ -78,8 +79,8 @@ $homepage = stream_get_contents($fileHandle);
 $content = vsprintf($homepage, [
     '%1$s Issuer' => empty($issuers) ? '' : $issuers[0],
     '%2$s Issuers' => empty($issuers) ? '' : var_export($issuers, true),
-    '%3$s Show Form' => ! isset($exception) && $outputState ? 'hidden' : '',
-    '%4$s Show Output' => $outputState ? '' : 'hidden',
+    '%3$s Show Form' => ! isset($exception) && $showOutput ? 'hidden' : '',
+    '%4$s Show Output' => $showOutput ? '' : 'hidden',
     '%5$s Web ID URL' => $webIdUrl,
     '%6$s WebID Profile' => empty($profile) ? '' : $profile->dump(),
 ]);
@@ -104,6 +105,7 @@ foreach ($response->getHeaders() as $name => $values) {
     }
 }
 
+header_remove('X-Powered-By');
 echo trim($response->getBody());
 exit;
 // =============================================================================
@@ -136,7 +138,7 @@ __halt_compiler();<!doctype html>
 </header>
 <main>
     <section>
-        <form enctype="application/x-www-form-urlencoded" method="POST" %3$s>
+        <form enctype="application/x-www-form-urlencoded" method="GET" %3$s>
             <label>
                 WebID URI:
                 <input
