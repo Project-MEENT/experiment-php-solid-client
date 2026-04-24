@@ -799,6 +799,9 @@ if ($isRedirect) {
         exit;
     }
 
+    // Extract webid claim (Solid-OIDC Section 7, Section 8.1).
+    $webIdUrl = $idTokenClaims['webid'] ?? $idTokenClaims['sub'] ?? null;
+
     // Refresh token
     // $refreshTokenValue = $tokenSet->getRefreshToken(); // Refresh token, if returned
     // $refreshToken = $authorizationService->refresh($client, $refreshTokenValue);
@@ -840,6 +843,7 @@ $content = vsprintf($homepage, [
     '%16$s PKCE' => $usePkce
         ? 'enabled <code>'.($codeVerifier ?? Session::current()->get('pkce_code_verifier')).'</code> ✅'
         : 'disabled 📴',
+    '%17$s WebID URL' => $webIdUrl ?? '',
 ]);
 $response->getBody()->write($content);
 // =============================================================================
@@ -883,6 +887,14 @@ __halt_compiler();<!doctype html>
     form { background-color: var(--color-bg-secondary); }
     output pre > code { white-space: pre-wrap; word-break: break-word; }
     title { display: inline; }
+
+    li[data-webid=""]::after {
+        content: '(Not present in token claims)';
+        font-style: italic;
+    }
+    li[data-webid=""] p {
+        display: none;
+    }
 
     .card {
         background-color: var(--color-accent);
@@ -963,6 +975,10 @@ __halt_compiler();<!doctype html>
                     Last DPoP proof sent to token endpoint<pre><code>%15$s</code></pre>
                 </li>
                 <li>PKCE %16$s</li>
+                <li data-webid="%17$s">
+                    WebID <code>%17$s</code>
+                    <p>Use this WebID <a href="example.04.fetch-protected-resource.php?webid=%17$s">in the Accessing a protected resource Example</a></p>
+                </li>
             </ol>
         </output>
     </section>
