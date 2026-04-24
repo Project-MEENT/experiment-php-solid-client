@@ -9,7 +9,6 @@
 
 namespace Potherca\Examples\Solid;
 
-use Facile\JoseVerifier\JWK\JwksProviderBuilder;
 use Facile\OpenIDClient\AuthMethod\AuthMethodFactory;
 use Facile\OpenIDClient\AuthMethod\AuthMethodInterface;
 use Facile\OpenIDClient\AuthMethod\ClientSecretBasic;
@@ -37,7 +36,6 @@ use Jose\Component\Signature\Serializer\CompactSerializer;
 use Laminas\Diactoros\Response;
 use Laminas\Diactoros\ServerRequestFactory;
 use Psr\Http\Message\RequestInterface;
-use Psr\SimpleCache\CacheInterface;
 use SessionHandler;
 
 // =============================================================================
@@ -325,7 +323,7 @@ final class DpopProofFactory
 
         // RFC9449 - DPoP - Section 7.1.  Resource Access Requests
         // When a request presents `Authorization: DPoP <access_token>`, the proof must
-        // also carry the `ath` claim from RFC9449 Section 4.2.
+        // also carry the `ath` claim from RFC9449 - DPoP - Section 4.2.
         $authorizationHeader = $request->getHeaderLine('Authorization');
         if (str_starts_with($authorizationHeader, 'DPoP ')) {
             $accessToken = substr($authorizationHeader, 5);

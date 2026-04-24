@@ -86,7 +86,12 @@ if ($issuerUrl !== '' && filter_var($issuerUrl, FILTER_VALIDATE_URL)) {
 }
 
 $showOutput = ! empty($issuerUrl) || ! empty($issuerConfig);
+// =============================================================================
 
+
+// =============================================================================
+// Create Output
+// -----------------------------------------------------------------------------
 $fileHandle = fopen(__FILE__, 'rb');
 fseek($fileHandle, __COMPILER_HALT_OFFSET__);
 $homepage = stream_get_contents($fileHandle);

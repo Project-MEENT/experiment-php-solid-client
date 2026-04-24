@@ -73,6 +73,9 @@ if ($webIdUrl) {
 
 $showOutput = ! empty($issuerUrl) || ! empty($issuerConfig) || $isRedirect;
 
+// =============================================================================
+// Create Output
+// -----------------------------------------------------------------------------
 $fileHandle = fopen(__FILE__, 'rb');
 fseek($fileHandle, __COMPILER_HALT_OFFSET__);
 $homepage = stream_get_contents($fileHandle);
