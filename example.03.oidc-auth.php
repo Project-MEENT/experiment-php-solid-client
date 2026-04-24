@@ -38,6 +38,7 @@ use Laminas\Diactoros\Response;
 use Laminas\Diactoros\ServerRequestFactory;
 use Psr\Http\Message\RequestInterface;
 use Psr\SimpleCache\CacheInterface;
+use SessionHandler;
 
 // =============================================================================
 // Bootstrap
@@ -45,7 +46,9 @@ use Psr\SimpleCache\CacheInterface;
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
+ini_set('session.serialize_handler', 'php_serialize');
 ob_start();
+session_set_save_handler(new SessionHandler(), true);
 session_start();
 
 require_once __DIR__ . '/vendor/autoload.php';
@@ -224,11 +227,54 @@ function findHttpResponse($trace, &$origin, &$dump)
 // =============================================================================
 // Utility classes and functions
 // -----------------------------------------------------------------------------
+final class Session
+{
+    private static $instance;
+
+    private function __construct() {}
+
+    public static function current()
+    {
+        if (!isset(self::$instance)) {
+            self::$instance = new self;
+        }
+
+        return self::$instance;
+    }
+
+    public function has($key): bool
+    {
+        return isset($_SESSION[$key]);
+    }
+
+    public function remove($key)
+    {
+        $value = $_SESSION[$key] ?? null;
+
+        unset($_SESSION[$key]);
+
+        return $value;
+    }
+
+    public function get($key)
+    {
+        return $_SESSION[$key] ?? null;
+    }
+
+    public function set($key, $value)
+    {
+        $_SESSION[$key] = $value;
+
+        return $value;
+    }
+}
+
 final class DpopAuthMethod implements AuthMethodInterface
 {
     public function __construct(
         private AuthMethodInterface $authMethod,
-        private DpopProofFactory $dpopProofFactory
+        private DpopProofFactory $dpopProofFactory,
+        private Session $sessionStore
     ) {}
 
     public function getSupportedMethod(): string
@@ -241,7 +287,7 @@ final class DpopAuthMethod implements AuthMethodInterface
         $request = $this->authMethod->createRequest($request, $client, $claims);
 
         $dpopProof = $this->dpopProofFactory->createProofForRequest($request);
-        $_SESSION['last_dpop_proof'] = $dpopProof;
+        $this->sessionStore->set('last_dpop_proof', $dpopProof);
 
         return $request->withHeader('DPoP', $dpopProof);
     }
@@ -447,13 +493,13 @@ $showOutput = ! empty($issuerUrl) || ! empty($issuerConfig) || $isRedirect;
 // RFC9449 - DPoP - Section 5.  DPoP Access Token Request
 // Initialise DPoP key pair (stored in session so the same key is reused across the redirect round-trip).
 if (
-    ! isset($_SESSION[DpopProofFactory::SESSION_KEY])
-    || ! is_array($_SESSION[DpopProofFactory::SESSION_KEY])
-    || ! isset($_SESSION[DpopProofFactory::SESSION_KEY]['kty'])) {
+    ! Session::current()->has(DpopProofFactory::SESSION_KEY)
+    || ! is_array(Session::current()->get(DpopProofFactory::SESSION_KEY))
+    || ! isset(Session::current()->get(DpopProofFactory::SESSION_KEY)['kty'])) {
     $jwk = JWKFactory::createECKey('P-256');
-    $_SESSION[DpopProofFactory::SESSION_KEY] = $jwk->all();
+    Session::current()->set(DpopProofFactory::SESSION_KEY, $jwk->all());
 } else {
-    $jwk = new JWK($_SESSION[DpopProofFactory::SESSION_KEY]);
+    $jwk = new JWK(Session::current()->get(DpopProofFactory::SESSION_KEY));
 }
 
 $dpopProofFactory = new DpopProofFactory(
@@ -462,16 +508,19 @@ $dpopProofFactory = new DpopProofFactory(
     new CompactSerializer()
 );
 
-/*/ RFC9449 Section 5: DPoP proof is injected automatically by DpopAuthMethod /*/
-$dpopAuthMethodFactory = new AuthMethodFactory([
-    new DpopAuthMethod(new ClientSecretBasic(), $dpopProofFactory),
-    new DpopAuthMethod(new ClientSecretJwt(), $dpopProofFactory),
-    new DpopAuthMethod(new ClientSecretPost(), $dpopProofFactory),
-    new DpopAuthMethod(new None(), $dpopProofFactory),
-    new DpopAuthMethod(new PrivateKeyJwt(), $dpopProofFactory),
-    new DpopAuthMethod(new TLSClientAuth(), $dpopProofFactory),
-    new DpopAuthMethod(new SelfSignedTLSClientAuth(), $dpopProofFactory),
-]);
+/*/ RFC9449 - DPoP - Section 5: DPoP proof is injected automatically by DpopAuthMethod /*/
+$sessionHandler = Session::current();
+$methods = [
+    new DpopAuthMethod(new ClientSecretBasic(), $dpopProofFactory, $sessionHandler),
+    new DpopAuthMethod(new ClientSecretJwt(), $dpopProofFactory, $sessionHandler),
+    new DpopAuthMethod(new ClientSecretPost(), $dpopProofFactory, $sessionHandler),
+    new DpopAuthMethod(new None(), $dpopProofFactory, $sessionHandler),
+    new DpopAuthMethod(new PrivateKeyJwt(), $dpopProofFactory, $sessionHandler),
+    new DpopAuthMethod(new TLSClientAuth(), $dpopProofFactory, $sessionHandler),
+    new DpopAuthMethod(new SelfSignedTLSClientAuth(), $dpopProofFactory, $sessionHandler),
+];
+unset($sessionHandler);
+$dpopAuthMethodFactory = new AuthMethodFactory($methods);
 
 $clientBuilder = new ClientBuilder();
 $clientBuilder = $clientBuilder
@@ -543,7 +592,7 @@ if (isset($client)) {
         /*/ rfc7636 - PKCE - Section 4.1.  Client Creates a Code Verifier /*/
         $codeVerifier = base64UrlEncode(random_bytes(32));
         if (! $isRedirect) {
-            $_SESSION['pkce_code_verifier'] = $codeVerifier;
+            Session::current()->set('pkce_code_verifier', $codeVerifier);
         }
         /*/ rfc7636 - PKCE - Section 4.2.  Client Creates the Code Challenge /*/
         $codeVerifierHash = hash('sha256', $codeVerifier, true);
@@ -610,19 +659,19 @@ if ($isRedirect) {
         exit;
     }
 
-    // In callback mode, issuer is recovered exclusively from signed state.
-    $issuerUrl = rtrim($payload['issr'], '/');
-    $openidDiscoveryUrl = $issuerUrl . '/.well-known/openid-configuration';
-
     if ($usePkce === true) {
         /*/ rfc7636 - PKCE - Section 4.5.  Client Sends the Authorization Code and the Code Verifier to the Token Endpoint /*/
-        $codeVerifier = $_SESSION['pkce_code_verifier'] ?? null;
+        $codeVerifier = Session::current()->get('pkce_code_verifier');
         $hasValidCodeVerifier = is_string($codeVerifier) && $codeVerifier !== '';
         if (! $hasValidCodeVerifier) {
             error($codeVerifier, 'Client has no valid PKCE code_verifier for this authorization response');
             exit;
         }
     }
+
+    // In callback mode, issuer is recovered exclusively from signed state.
+    $issuerUrl = rtrim($payload['issr'], '/');
+    $openidDiscoveryUrl = $issuerUrl . '/.well-known/openid-configuration';
 
     /*/ RFC9449 - DPoP - Section 5. DPoP Access Token Request /*/
     // The token request must include a DPoP header with a valid proof JWT (see RFC9449 Section 4.2 for proof syntax).
@@ -661,9 +710,9 @@ if ($isRedirect) {
         }
         $tokenSet = $authorizationService->grant($client, $params);
 
-        unset($_SESSION['pkce_code_verifier']);
+        Session::current()->remove('pkce_code_verifier');
     } catch (\Facile\OpenIDClient\Exception\ExceptionInterface $e) {
-        unset($_SESSION['pkce_code_verifier']);
+        Session::current()->remove('pkce_code_verifier');
         // InvalidArgumentException(Invalid metadata content)
         if ($e->getPrevious()) {
             // Response could not be parsed as JSON
@@ -749,12 +798,12 @@ $content = vsprintf($homepage, [
         ? '❌ <strong>(WARNING: id_token signature verification failed, claims should not be trusted!)<strong>'
         : '✅',
     '%13$s ID Token Claims' => isset($idTokenClaims) ? var_export($idTokenClaims, true) : '',
-    '%14$s Public DPoP JWK thumbprint' => isset($dpopProofFactory) ? $dpopProofFactory->getPublicJwkThumbprint() : '',
-    '%15$s Last DPoP proof' => isset($_SESSION['last_dpop_proof']) ? $_SESSION['last_dpop_proof'] : '',
+    '%14$s Public DPoP JWK thumbprint' => $dpopProofFactory->getPublicJwkThumbprint(),
+    '%15$s Last DPoP proof' => Session::current()->get('last_dpop_proof') ?? '',
 
     '%16$s PKCE' => $usePkce
-        ? 'enabled <code>'.($codeVerifier ?? $_SESSION['pkce_code_verifier'] ?? '').'</code> 🔛'
-        : 'disabled 📴'
+        ? 'enabled <code>'.($codeVerifier ?? Session::current()->get('pkce_code_verifier')).'</code> ✅'
+        : 'disabled 📴',
 ]);
 $response->getBody()->write($content);
 // =============================================================================
