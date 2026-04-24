@@ -396,6 +396,8 @@ $stateTtlSeconds = 300;
 // For certain issuers (like https://solidcommunity.net) PKCE is required, even for  server-to-server calls
 // @FIXME: Decide to either ALWAYS add PKCE, or only for know offeders and/or use PKCE as fallback on failing call.
 $usePkce = true;
+// -----------------------------------------------------------------------------
+$useCsrfCheck = true;
 // =============================================================================
 
 
@@ -585,8 +587,13 @@ if (isset($client)) {
         'issr' => $issuerUrl,
     ], JSON_THROW_ON_ERROR));
     $signature = base64UrlEncode(hash_hmac('sha256', $header . '.' . $payload, $stateSigningKey, true));
+    $state = $header . '.' . $payload . '.' . $signature;
 
-    $authorizationRequestParams['state'] = $header . '.' . $payload . '.' . $signature;
+    if ($useCsrfCheck === true){
+        Session::current()->set('oauth_state', $state);
+    }
+
+    $authorizationRequestParams['state'] = $state;
 
     if ($usePkce === true) {
         /*/ rfc7636 - PKCE - Section 4.1.  Client Creates a Code Verifier /*/
@@ -629,6 +636,19 @@ if ($isRedirect) {
     if (! is_string($stateToken) || $stateToken === '') {
         error('Missing state parameter', 'Callback is missing "state" parameter', $request->getQueryParams());
         exit;
+    }
+
+    // CSRF: validate state matches what we sent (OIDC Core Section 3.1.2.7).
+    if ($useCsrfCheck === true) {
+        $expectedState = Session::current()->get('oauth_state');
+        if ($stateToken !== $expectedState) {
+            error('CSRF Check Failed. Received state does not match state stored in the session', [
+                'returned_state' => $stateToken,
+                'expected_state' => $expectedState,
+            ]);
+            exit;
+        }
+        Session::current()->remove('oauth_state');
     }
 
     $parts = explode('.', $stateToken);
