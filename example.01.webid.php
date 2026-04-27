@@ -71,7 +71,7 @@ if ($webIdUrl) {
     }
 }
 
-$showOutput = ! empty($issuerUrl) || ! empty($issuerConfig) || $isRedirect;
+$showOutput = ! empty($issuerUrl) || ! empty($issuerConfig) || (isset($issuers) && ! empty($issuers));
 
 // =============================================================================
 // Create Output
