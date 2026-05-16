@@ -278,8 +278,7 @@ final class DpopAuthMethod implements AuthMethodInterface
 {
     public function __construct(
         private AuthMethodInterface $authMethod,
-        private DpopProofFactory $dpopProofFactory,
-        private Session $sessionStore
+        private DpopProofFactory $dpopProofFactory
     ) {}
 
     public function getSupportedMethod(): string
@@ -292,7 +291,6 @@ final class DpopAuthMethod implements AuthMethodInterface
         $request = $this->authMethod->createRequest($request, $client, $claims);
 
         $dpopProof = $this->dpopProofFactory->createProofForRequest($request);
-        $this->sessionStore->set('last_dpop_proof', $dpopProof);
 
         return $request->withHeader('DPoP', $dpopProof);
     }
@@ -394,28 +392,115 @@ function decodeUnsafeJwt(string $jwt): array
     return $claims;
 }
 
-function saveOfflineGrant($session, $filesystem, $issuerHash)
+function getGrantFilePath($issuerUrl, $webIdUrl)
 {
-    $snapshot = [
-        DpopProofFactory::SESSION_KEY => $session->get(DpopProofFactory::SESSION_KEY),
-        'saved_at' => time(),
-        'solid_access_token' => $session->get('solid_access_token'),
-        'solid_refresh_token' => $session->get('solid_refresh_token'),
-        'solid_resource_url' => $session->get('solid_resource_url'),
-        'solid_storage_root' => $session->get('solid_storage_root'),
-        'solid_token_expiry' => $session->get('solid_token_expiry'),
-        'solid_webid' => $session->get('solid_webid'),
-    ];
+    $issuerHash = hashUrl($issuerUrl, 'sha256');
+    $webIdHash = hashUrl($webIdUrl, 'sha1');
 
-    $grant = array_filter($snapshot, static function ($value): bool {
-        return $value !== null && $value !== '';
-    });
+    return $issuerHash . '/' . $webIdHash . '.json';
+}
 
-    // @FIXME: This grant is issuer AND _webid_ specific. ADD WEBID!
-    $path = $issuerHash . '/offline-grant.json';
-    $encode = json_encode($grant, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+function getOfflineGrant($filesystem, $issuerUrl, $webIdUrl)
+{
+    $offlineGrant = [];
+    $path = getGrantFilePath($issuerUrl, $webIdUrl);
 
-    $filesystem->write($path, $encode);
+    if ($filesystem->fileExists($path)) {
+        $contents = $filesystem->read($path);
+        $storedGrant = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
+
+        if (is_array($storedGrant)) {
+            $offlineGrant = $storedGrant;
+        }
+    }
+
+    return $offlineGrant;
+}
+
+function handleOfflineAccess($authorizationService, $client, $filesystem, $issuerUrl, $webIdUrl)
+{
+    $grant = getOfflineGrant($filesystem, $issuerUrl, $webIdUrl);
+
+    $storedAccessToken = $grant['solid_access_token'] ?? null;
+    $storedExpiry = $grant['solid_token_expiry'] ?? null;
+    $hasValidAccessToken = is_string($storedAccessToken)
+        && $storedAccessToken !== ''
+        && is_numeric($storedExpiry)
+        && (int) $storedExpiry > time() + 60;
+
+    if ($hasValidAccessToken) {
+        return $storedAccessToken;
+    }
+
+    $storedRefreshToken = $grant['solid_refresh_token'] ?? null;
+    $hasRefreshToken = is_string($storedRefreshToken) && $storedRefreshToken !== '';
+
+    if (! $hasRefreshToken) {
+        return null;
+    }
+
+    try {
+        $tokenSet = $authorizationService->refresh($client, $storedRefreshToken);
+    } catch (\Facile\OpenIDClient\Exception\ExceptionInterface $e) {
+        $grant['error'] = [
+            'code' => $e->getCode(),
+            'exception' => get_class($e),
+            'message' => $e->getMessage(),
+            'timestamp' => date('Y-m-d H:i:s'),
+            'trace' => $e->getTraceAsString(),
+        ];
+        saveOfflineGrant($filesystem, $issuerUrl, $webIdUrl, $grant);
+
+        return null;
+    }
+
+    $idToken = $tokenSet->getIdToken();
+    if (is_string($idToken) && $idToken !== '') {
+        try {
+            $verifier = (new IdTokenVerifierBuilder())->build($client);
+            $refreshedAccessToken = $tokenSet->getAccessToken();
+
+            if (is_string($refreshedAccessToken) && $refreshedAccessToken !== '') {
+                $verifier = $verifier->withAccessToken($refreshedAccessToken);
+            }
+
+            $idTokenClaims = $verifier->verify($idToken);
+        } catch (\Facile\JoseVerifier\Exception\ExceptionInterface $e) {
+            $idTokenClaims = decodeUnsafeJwt($idToken);
+        }
+
+        $refreshedWebId = $idTokenClaims['webid'] ?? $idTokenClaims['sub'] ?? null;
+        if (is_string($refreshedWebId) && $refreshedWebId !== '') {
+            $grant['solid_webid'] = $refreshedWebId;
+        }
+    }
+
+    $accessToken = $tokenSet->getAccessToken();
+    $expiresIn = $tokenSet->getExpiresIn();
+
+    $grant['solid_access_token'] = $accessToken;
+    $grant['solid_refresh_token'] = $tokenSet->getRefreshToken() ?: $storedRefreshToken;
+    $grant['solid_token_expiry'] = $expiresIn > 0 ? time() + $expiresIn : time() + 3600;
+
+    saveOfflineGrant($filesystem, $issuerUrl, $webIdUrl, $grant);
+
+    return $accessToken;
+}
+
+function hashUrl($url, $algorithm = 'sha256')
+{
+    $normalisedUrl = strtolower(rtrim($url, '/'));
+
+    return hash($algorithm, $normalisedUrl);
+}
+
+function saveOfflineGrant($filesystem, $issuerUrl, $webIdUrl, $grant)
+{
+    $grant['saved_at'] = time();
+    $path = getGrantFilePath($issuerUrl, $webIdUrl);
+    $encodedGrant = json_encode($grant, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+
+    $filesystem->write($path, $encodedGrant);
 }
 
 // =============================================================================
@@ -429,18 +514,11 @@ $storageLocation = __DIR__ . '/build/storage/';
 // -----------------------------------------------------------------------------
 $clientConfigFile = 'client_metadata.json';
 
-$clientServer = $request->getUri()->withFragment('')->withPath('')->withQuery('');
-$clientRedirectUri = $clientServer . '/oidc-offline-access/';
-
-$clientId = base64UrlEncode(random_bytes(32)); // $clientServer . '/' . $clientConfigFile;
-$clientName = 'Solid Client Examples in PHP by Potherca';
-$clientRedirectUris = [
-    $clientRedirectUri,
-    $clientServer . '/oidc-auth/', // example.03.oidc-auth.php
-    $clientServer . '/oidc-offline-access/', // example.05.fetch-protected-resource-offline.php
-    $clientServer . '/oidc-protected-access/', // example.04.fetch-protected-resource.php
-];
-$clientSecret = 'my-client-secret';
+$clientId = null;
+$clientName = 'MEENT Solid P1 Dongle Webhook';
+$clientRedirectUri = $request->getUri()->withFragment('')->withQuery('')->__toString();
+$clientRedirectUris = [$clientRedirectUri];
+$clientSecret = base64UrlEncode(random_bytes(32));
 
 // -----------------------------------------------------------------------------
 $stateSigningKey = $clientSecret; // @TODO: Use separate secret (i.e. private key) for signing
@@ -484,9 +562,9 @@ $filesystem = new \League\Flysystem\Filesystem($adapter);
 // -----------------------------------------------------------------------------
 // Create Cache Store
 // -----------------------------------------------------------------------------
-if ($filesystem) {
+if ($filesystem && class_exists('\\MatthiasMullie\\Scrapbook\\Adapters\\Flysystem')) {
     $store = new \MatthiasMullie\Scrapbook\Adapters\Flysystem($filesystem);
-} else {
+} elseif (class_exists('\\MatthiasMullie\\Scrapbook\\Adapters\\MemoryStore')) {
     $store = new \MatthiasMullie\Scrapbook\Adapters\MemoryStore();
 }
 
@@ -502,15 +580,37 @@ $issuerBuilder = $issuerBuilder->setMetadataProviderBuilder($metadataProviderBui
 
 // Step 1. Create client for issuer
 $clientConfigFileExists = $filesystem->fileExists($clientConfigFile);
+if ($clientConfigFileExists) {
+    try {
+        $contents = json_decode($filesystem->read($clientConfigFile), true, 512, JSON_THROW_ON_ERROR);
+        if (is_array($contents)) {
+            $clientConfig = $contents;
+        }
+    } catch (\JsonException $e) {
+        $clientConfig = [];
+    }
+}
+
+$clientId = $clientConfig['client_id'] ?? $clientId;
+$clientName = $clientConfig['client_name'] ?? $clientName;
+$clientRedirectUris = $clientConfig['redirect_uris'] ?? $clientRedirectUris;
+$clientRedirectUri = is_array($clientRedirectUris) && $clientRedirectUris !== []
+    ? reset($clientRedirectUris)
+    : $clientRedirectUri;
+$clientSecret = $clientConfig['client_secret'] ?? $clientSecret;
+
 if (! $clientConfigFileExists) {
     // Client metadata file not found, creating...
     $data = [
-        'client_id' => $clientId,
         'client_name' => $clientName,
         'client_secret' => $clientSecret,
         'redirect_uris' => $clientRedirectUris,
         'token_endpoint_auth_method' => 'client_secret_basic', // the auth method for the token endpoint
     ];
+
+    if (is_string($clientId) && $clientId !== '') {
+        $data['client_id'] = $clientId;
+    }
 
     if ($useOfflineAccess === true) {
         // grant_types must include refresh_token to receive one (OIDC Core Section 11 / offline_access)
@@ -581,15 +681,17 @@ $showOutput = ! empty($webIdUrl) ||! empty($issuerUrl) || ! empty($issuerConfig)
 // @FIXME: There is a scenario where, if the page is opened with a __WebID__, and there has not yet been a consent call, we will get a 403!
 
 // RFC9449 - DPoP - Section 5.  DPoP Access Token Request
-// Initialise DPoP key pair (stored in session so the same key is reused across the redirect round-trip).
-if (
-    ! Session::current()->has(DpopProofFactory::SESSION_KEY)
-    || ! is_array(Session::current()->get(DpopProofFactory::SESSION_KEY))
-    || ! isset(Session::current()->get(DpopProofFactory::SESSION_KEY)['kty'])) {
+// Initialise DPoP key pair (persisted to disk so the same key is reused across requests).
+$dpopJwkFile = rtrim($storageLocation, '/') . '/dpop_jwk.json';
+if (file_exists($dpopJwkFile)) {
+    $jwkData = json_decode(file_get_contents($dpopJwkFile), true, 512, JSON_THROW_ON_ERROR);
+}
+
+if (! isset($jwkData) || ! is_array($jwkData) || ! isset($jwkData['kty'])) {
     $jwk = JWKFactory::createECKey('P-256');
-    Session::current()->set(DpopProofFactory::SESSION_KEY, $jwk->all());
+    file_put_contents($dpopJwkFile, json_encode($jwk->all(), JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
 } else {
-    $jwk = new JWK(Session::current()->get(DpopProofFactory::SESSION_KEY));
+    $jwk = new JWK($jwkData);
 }
 
 $dpopProofFactory = new DpopProofFactory(
@@ -599,18 +701,16 @@ $dpopProofFactory = new DpopProofFactory(
 );
 
 /*/ RFC9449 - DPoP - Section 5: DPoP proof is injected automatically by DpopAuthMethod /*/
-$sessionHandler = Session::current();
 $methods = [
-    new DpopAuthMethod(new ClientSecretBasic(), $dpopProofFactory, $sessionHandler),
-    new DpopAuthMethod(new ClientSecretJwt(), $dpopProofFactory, $sessionHandler),
-    new DpopAuthMethod(new ClientSecretPost(), $dpopProofFactory, $sessionHandler),
-    new DpopAuthMethod(new None(), $dpopProofFactory, $sessionHandler),
-    new DpopAuthMethod(new PrivateKeyJwt(), $dpopProofFactory, $sessionHandler),
-    new DpopAuthMethod(new TLSClientAuth(), $dpopProofFactory, $sessionHandler),
-    new DpopAuthMethod(new SelfSignedTLSClientAuth(), $dpopProofFactory, $sessionHandler),
+    new DpopAuthMethod(new ClientSecretBasic(), $dpopProofFactory),
+    new DpopAuthMethod(new ClientSecretJwt(), $dpopProofFactory),
+    new DpopAuthMethod(new ClientSecretPost(), $dpopProofFactory),
+    new DpopAuthMethod(new None(), $dpopProofFactory),
+    new DpopAuthMethod(new PrivateKeyJwt(), $dpopProofFactory),
+    new DpopAuthMethod(new TLSClientAuth(), $dpopProofFactory),
+    new DpopAuthMethod(new SelfSignedTLSClientAuth(), $dpopProofFactory),
 ];
-unset($sessionHandler);
-// Initialise DPoP key pair (stored in session so the same key is reused across the redirect round-trip).
+// Initialise DPoP key pair (persisted to disk so the same key is reused across requests).
 $dpopAuthMethodFactory = new AuthMethodFactory($methods);
 
 $clientBuilder = new ClientBuilder();
@@ -708,45 +808,6 @@ if (isset($issuer)) {
 
     $clientMetadata = ClientMetadata::fromArray($registeredClaims);
 
-    if ($useOfflineAccess === true) {
-        $offlineGrant = [];
-
-        $path = $issuerHash . '/offline-grant.json';
-
-        if ($filesystem->fileExists($path)) {
-            $contents = $filesystem->read($path);
-            $storedGrant = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
-
-            if (is_array($storedGrant)) {
-                $offlineGrant = $storedGrant;
-            }
-        }
-
-        if (
-            $offlineGrant !== []
-            && ! Session::current()->has('solid_refresh_token')
-            && ! Session::current()->has('solid_access_token')
-        ) {
-            foreach ([
-                'solid_access_token',
-                'solid_refresh_token',
-                'solid_resource_url',
-                'solid_storage_root',
-                'solid_token_expiry',
-                'solid_webid',
-            ] as $key) {
-                if (array_key_exists($key, $offlineGrant)) {
-                    Session::current()->set($key, $offlineGrant[$key]);
-                }
-            }
-
-            $sessionKey = DpopProofFactory::SESSION_KEY;
-            if (isset($offlineGrant[$sessionKey]) && is_array($offlineGrant[$sessionKey])) {
-                Session::current()->set($sessionKey, $offlineGrant[$sessionKey]);
-            }
-        }
-    }
-
     $clientBuilder = $clientBuilder
         ->setClientMetadata($clientMetadata)
         ->setIssuer($issuer)
@@ -764,88 +825,13 @@ $offlineModeHandled = false;
 
 if (isset($client)) {
 // if (! $isRedirect) === isset($issuer) === isset($client)
-    if ($useOfflineAccess === true) {
-        $persistedAccessToken = Session::current()->get('solid_access_token');
-        $persistedRefreshToken = Session::current()->get('solid_refresh_token');
-        $persistedExpiry = Session::current()->get('solid_token_expiry');
+    if ($useOfflineAccess === true && filter_var($webIdUrl, FILTER_VALIDATE_URL) && isset($issuerUrl)) {
+        $offlineGrantFile = getGrantFilePath($issuerUrl, $webIdUrl);
 
-        $hasReusableAccessToken = is_string($persistedAccessToken)
-            && $persistedAccessToken !== ''
-            && is_numeric($persistedExpiry)
-            && (int) $persistedExpiry > time() + 60;
-
-        $hasRefreshToken = is_string($persistedRefreshToken) && $persistedRefreshToken !== '';
-
-        if ($hasReusableAccessToken || $hasRefreshToken) {
-            echo '<h2>Offline mode: reuse previously granted consent</h2>';
-
-            $accessToken = null;
-            $idTokenClaims = [];
-
-            if ($hasReusableAccessToken) {
-                $accessToken = $persistedAccessToken;
-                // Reusing stored access token until', date('Y-m-d H:i:s', (int) $persistedExpiry));
-            } elseif ($hasRefreshToken) {
-                // Stored access token missing or expired; refreshing with the persisted refresh token.
-                try {
-                    $refreshedTokenSet = $authorizationService->refresh($client, $persistedRefreshToken);
-
-                    $accessToken = $refreshedTokenSet->getAccessToken();
-                    $expiresIn = $refreshedTokenSet->getExpiresIn();
-                    if ($expiresIn > 0) {
-                        $tokenExpiry = time() + $expiresIn;
-                    } else {
-                        $tokenExpiry = time() + 3600;
-                    }
-
-                    Session::current()->set('solid_access_token', $accessToken);
-                    Session::current()->set('solid_refresh_token', $refreshedTokenSet->getRefreshToken() ?: $persistedRefreshToken);
-                    Session::current()->set('solid_token_expiry', $tokenExpiry);
-
-                    $refreshedIdToken = $refreshedTokenSet->getIdToken();
-                    if (is_string($refreshedIdToken) && $refreshedIdToken !== '') {
-                        try {
-                            $idTokenClaims = (new IdTokenVerifierBuilder())->build($client)
-                                ->withAccessToken($accessToken)
-                                ->verify($refreshedIdToken);
-                        } catch (\Facile\JoseVerifier\Exception\ExceptionInterface $e) {
-                            $idTokenClaims = decodeUnsafeJwt($refreshedIdToken);
-                            // @KLUDGE: refreshed id_token verification failed: $e->getMessage(); continuing with unverified claims',
-                        }
-
-                        $refreshedWebId = $idTokenClaims['webid'] ?? $idTokenClaims['sub'] ?? null;
-                        if (is_string($refreshedWebId) && $refreshedWebId !== '') {
-                            Session::current()->set('solid_webid', $refreshedWebId);
-                        }
-                    }
-
-                    saveOfflineGrant(Session::current(), $filesystem, $issuerHash);
-                    // Refresh token exchange succeeded; offline consent is being reused.
-                } catch (\Facile\OpenIDClient\Exception\ExceptionInterface $e) {
-                    $path = $issuerHash . '/offline-grant.json';
-
-                    if ($filesystem->fileExists($path)) {
-                        $filesystem->delete($path);
-                    }
-
-                    foreach ([
-                        DpopProofFactory::SESSION_KEY,
-                        'solid_access_token',
-                        'solid_refresh_token',
-                        'solid_resource_url',
-                        'solid_storage_root',
-                        'solid_token_expiry',
-                        'solid_webid',
-                    ] as $key) {
-                        Session::current()->remove($key);
-                    }
-                    // @KLUDGE: Stored offline grant could not be refreshed: $e->getMessage(); falling back to interactive login
-                }
-            }
+        if ($filesystem->fileExists($offlineGrantFile)) {
+            $accessToken = handleOfflineAccess($authorizationService, $client, $filesystem, $issuerUrl, $webIdUrl);
 
             if (is_string($accessToken) && $accessToken !== '') {
-                saveOfflineGrant(Session::current(), $filesystem, $issuerHash);
-
                 $offlineModeHandled = true;
             }
         }
@@ -885,11 +871,20 @@ if (isset($client)) {
             $authorizationRequestParams['code_challenge'] = $codeChallenge;
             $authorizationRequestParams['code_challenge_method'] = 'S256'; // RFC7636: clients capable of S256 MUST use S256.
 
-            if ($useOfflineAccess === true) {
-                // offline_access requires explicit consent so the OP actually issues a refresh token (OIDC Core Section 11).
-                $authorizationRequestParams['prompt'] = 'consent';
-                $authorizationRequestParams['scope'] = 'openid webid offline_access';
+        }
+
+        if ($useOfflineAccess === true) {
+            // offline_access requires explicit consent so the OP actually issues a refresh token (OIDC Core Section 11).
+            $offlineGrant = [];
+            if (filter_var($webIdUrl, FILTER_VALIDATE_URL)) {
+                $offlineGrant = getOfflineGrant($filesystem, $issuerUrl, $webIdUrl);
             }
+
+            if (empty($offlineGrant['solid_refresh_token'])) {
+                $authorizationRequestParams['prompt'] = 'consent';
+            }
+
+            $authorizationRequestParams['scope'] = 'openid webid offline_access';
         }
 
         $redirectAuthorizationUri = $authorizationService->getAuthorizationUri($client, $authorizationRequestParams);
@@ -1076,10 +1071,21 @@ if ($isRedirect) {
     // Extract webid claim (Solid-OIDC Section 7, Section 8.1).
     $webIdUrl = $idTokenClaims['webid'] ?? $idTokenClaims['sub'] ?? null;
 
+    if (! is_string($webIdUrl) || ! filter_var($webIdUrl, FILTER_VALIDATE_URL)) {
+        error($webIdUrl, 'Provider did not return a valid WebID URL claim in id_token', $idTokenClaims);
+        exit;
+    }
+
     // -------------------------------------------------------------------------
     // Persist tokens for offline operation.
     // Store refresh_token server-side in session; never expose to browser (OIDC Core Section 12).
     if ($useOfflineAccess === true) {
+        $refreshToken = $tokenSet->getRefreshToken();
+        if (! is_string($refreshToken) || $refreshToken === '') {
+            error($tokenSet, 'Provider did not return a refresh_token. Ensure offline_access is requested and consent is granted.');
+            exit;
+        }
+
         $expiresIn = $tokenSet->getExpiresIn();
         // @CHECKME: Not sure which should come first, the expiry form the token or from the id_token
         if ($expiresIn > 0) {
@@ -1091,11 +1097,20 @@ if ($isRedirect) {
         }
 
         Session::current()->set('solid_access_token', $tokenSet->getAccessToken());
-        Session::current()->set('solid_refresh_token', $tokenSet->getRefreshToken());
+        Session::current()->set('solid_refresh_token', $refreshToken);
         Session::current()->set('solid_token_expiry', $tokenExpiry);
         Session::current()->set('solid_webid', $webIdUrl);
 
-        saveOfflineGrant(Session::current(), $filesystem, $issuerHash);
+        $grant = array_filter([
+            'solid_access_token' => $tokenSet->getAccessToken(),
+            'solid_refresh_token' => $refreshToken,
+            'solid_token_expiry' => $tokenExpiry,
+            'solid_webid' => $webIdUrl,
+        ], static function ($value): bool {
+            return $value !== null && $value !== '';
+        });
+
+        saveOfflineGrant($filesystem, $issuerUrl, $webIdUrl, $grant);
     }
 }
 
@@ -1158,7 +1173,16 @@ if ($webIdUrl && filter_var($webIdUrl, FILTER_VALIDATE_URL)) {
 }
 
 // If there is no "offline" access, this only works after we have been redirected from the Issuer
-if(isset($privateContainerUrl)) {
+if(isset($privateContainerUrl) && isset($client) && isset($issuerUrl) && isset($authorizationService)) {
+    if ($useOfflineAccess === true) {
+        $accessToken = handleOfflineAccess($authorizationService, $client, $filesystem, $issuerUrl, $webIdUrl);
+    }
+
+    if (! is_string($accessToken ?? null) || $accessToken === '') {
+        error('No valid access token available to fetch resource', 'Reconnect WebID to obtain consent/tokens.');
+        exit;
+    }
+
     $resourceRequest = new \GuzzleHttp\Psr7\Request('GET', $privateContainerUrl, [
         'Authorization' => 'DPoP ' . $accessToken, // 'Accept' => 'text/turtle, application/ld+json',
     ]);
