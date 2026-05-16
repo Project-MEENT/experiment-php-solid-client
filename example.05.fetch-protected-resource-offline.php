@@ -373,6 +373,11 @@ function base64UrlEncode($data) {
     return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
 }
 
+function createSignature($data, $key): string
+{
+    return base64UrlEncode(hash_hmac('sha256', $data, $key, true));
+}
+
 function decodeUnsafeJwt(string $jwt): array
 {
     $claims = [];
@@ -489,9 +494,19 @@ function handleOfflineAccess($authorizationService, $client, $filesystem, $issue
 
 function hashUrl($url, $algorithm = 'sha256')
 {
-    $normalisedUrl = strtolower(rtrim($url, '/'));
+    $parts = parse_url($url);
 
-    return hash($algorithm, $normalisedUrl);
+    if (! is_array($parts) || ! isset($parts['scheme'], $parts['host'])) {
+        return hash($algorithm, strtolower(rtrim((string) $url, '/')));
+    }
+
+    $normalisedUrl = $parts['scheme'] . ($parts['scheme'] === 'http' ? 's' : '')
+        . '://'
+        . $parts['host']
+        . (array_key_exists('port', $parts) ? ':' . $parts['port'] : '')
+        . (array_key_exists('path', $parts) ? rtrim($parts['path'], '/') : '');
+
+    return hash($algorithm, strtolower($normalisedUrl));
 }
 
 function saveOfflineGrant($filesystem, $issuerUrl, $webIdUrl, $grant)
@@ -757,6 +772,15 @@ if (! isset($issuer) && isset($webIdUrl) && filter_var($webIdUrl, FILTER_VALIDAT
         $issuers = array_unique($uris);
     }
 
+    $issuers = array_values(array_filter($issuers, static function ($issuerUrl) {
+        return is_string($issuerUrl) && filter_var($issuerUrl, FILTER_VALIDATE_URL);
+    }));
+
+    if ($issuers === []) {
+        error("Could not resolve an OIDC issuer from '$webIdUrl'", 'Invalid WebID profile');
+        exit;
+    }
+
     // @FIXME: If there is more than one issuer, the user should be able to choose which on to use
     $issuerUrl = reset($issuers);
 
@@ -848,7 +872,7 @@ if (isset($client)) {
             'exp' => time() + $stateTtlSeconds,
             'issr' => $issuerUrl,
         ], JSON_THROW_ON_ERROR));
-        $signature = base64UrlEncode(hash_hmac('sha256', $header . '.' . $payload, $stateSigningKey, true));
+        $signature = createSignature($header . '.' . $payload, $stateSigningKey);
         $state = $header . '.' . $payload . '.' . $signature;
 
         if ($useCsrfCheck === true) {
@@ -940,7 +964,7 @@ if ($isRedirect) {
         $header = json_decode(base64UrlDecode($parts[0]), true, 512, JSON_THROW_ON_ERROR);
         $payload = json_decode(base64UrlDecode($parts[1]), true, 512, JSON_THROW_ON_ERROR);
 
-        $expectedSignature = base64UrlEncode(hash_hmac('sha256', $parts[0] . '.' . $parts[1], $stateSigningKey, true));
+        $expectedSignature = createSignature($parts[0] . '.' . $parts[1], $stateSigningKey);
 
         if (! is_array($header) || ($header['alg'] ?? null) !== 'HS256') {
             $error = 'State JWT must use HS256';
