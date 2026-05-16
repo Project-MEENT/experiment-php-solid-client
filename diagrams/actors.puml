@@ -1,22 +1,18 @@
 @startuml
 
-!include_once style.iuml
+!if %not(%variable_exists("$ACTORS_LOADED"))
+    !$ACTORS_LOADED=true
 
-== Actors ==
+    !include_once style.iuml
 
-actor User as user
+    actor User as user
 
-participant "Client\n(Relying Party)" as app #white
+    participant "Client\n(Relying Party)" as app #white
 
-box Solid #784AF788
-    participant "Identity Provider\n(OIDC Issuer)\n(Authorization Server)" as solid.idp
-    participant "Storage Provider\n(Pod)\n(Resource Server)" as solid.pod
-end box
-
-user o--> app
-user o--> solid.idp
-
-app o--> solid.idp
-app o--> solid.pod
+    box Solid #784AF788
+        participant "Identity Provider\n(OIDC Issuer)\n(Authorization Server)" as solid.idp
+        participant "Storage Provider\n(Pod)\n(Resource Server)" as solid.pod
+    end box
+!endif
 
 @enduml

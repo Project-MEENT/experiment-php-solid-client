@@ -1,6 +1,14 @@
 @startuml
 
+== Actors ==
+
 !include_once actors.puml
+
+user o--> app
+user o--> solid.idp
+
+app o--> solid.idp
+app o--> solid.pod
 
 == Flows ==
 

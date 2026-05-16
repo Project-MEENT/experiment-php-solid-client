@@ -4,8 +4,6 @@ title Solid\nOpenID Connect (OIDC)\nAuthorization Code Flow - Example 5
 
 !include_once actors.puml
 
-== Flows ==
-
 group Offline Access (Example 5)
     autonumber 5.1
     opt No active user session

@@ -4,8 +4,6 @@ title Solid\nOpenID Connect (OIDC)\nAuthorization Code Flow - Example 2
 
 !include_once actors.puml
 
-== Flows ==
-
 group OpenID Connect (OIDC) issuer Discovery (Example 2)
     autonumber 2.1
 

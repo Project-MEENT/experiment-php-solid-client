@@ -4,8 +4,6 @@ title Solid\nOpenID Connect (OIDC)\nAuthorization Code Flow - Example 1
 
 !include_once actors.puml
 
-== Flows ==
-
 alt User provides WebID
 group Fetch WebID Profile (Example 1)
     autonumber 1.1

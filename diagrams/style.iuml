@@ -1,3 +1,4 @@
+@startuml
 <style>
     actor {
         BackgroundColor transparent
@@ -26,3 +27,4 @@ skinparam {
         backgroundColor #784AF788
     }
 }
+@enduml

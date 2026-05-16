@@ -4,8 +4,6 @@ title Solid\nOpenID Connect (OIDC)\nAuthorization Code Flow - Example 3
 
 !include_once actors.puml
 
-== Flows ==
-
 group OIDC Authorization Code Flow (Example 3)
     autonumber 3.0.1
     opt Dynamic Client Registration
