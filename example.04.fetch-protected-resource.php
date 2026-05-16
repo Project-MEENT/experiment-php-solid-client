@@ -408,6 +408,7 @@ $clientRedirectUri = $clientServer . '/oidc-protected-access/';
 $clientId = $clientServer . '/' . $clientConfigFile;
 $clientName = 'Solid Client Examples in PHP by Potherca';
 $clientRedirectUris = [
+    $clientRedirectUri,
     $clientServer . '/oidc-auth/', // example.03.oidc-auth.php
     $clientServer . '/oidc-offline-access/', // example.05.fetch-protected-resource-offline.php
     $clientServer . '/oidc-protected-access/', // example.04.fetch-protected-resource.php
