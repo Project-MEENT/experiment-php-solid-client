@@ -104,9 +104,39 @@ switch ($path) {
     case '':
     case basename(__FILE__):
         $context['content'] = <<<'HTML'
+
+<p>This project provides various examples related to accessing a protected resource on a <a href="https://solidproject.org/get_a_pod">Solid Pod</a></p>
+
+<p>The full flow is:</p>
+
 <ol>
-    <li><a href="/webid">WebID</a></li>
-    <li><a href="/oidc">OIDC</a></li>
+    <li><a href="/webid/">Fetching a WebID Profile</a></li>
+    <ul>
+        <li>The User provides the Client (the "Relying Party") with a <a href="https://w3c-cg.github.io/WebID/spec/identity/">WebId</a> URL</li>
+        <li>The Client fetches the <a href="https://solid.github.io/webid-profile/">WebId Profile</a> from the provided URL</li>
+    </ul>
+    <li><a href="/oidc-discovery/">OpenID Connect (OIDC) issuer Discovery</a></li>
+    <ul>
+        <li>The Client extracts the OIDC Issuer URL (<code>http://www.w3.org/ns/solid/terms#oidcIssuer</code>) from the fetched WebId Profile</li>
+        <li>The Client fetches the <a href="https://openid.net/specs/openid-connect-discovery-1_0.html"> configuration of the OpenID Provider (the "Authorization Server")</a> from the discovery URL (<code>/.well-known/openid-configuration</code>) of the extracted OIDC Issuer URL</li>
+    </ul>
+    <li><a href="/oidc-auth/">OIDC Authorization Code Flow</a></li>
+    <ul>
+        <li>The Client prepares an <a href="https://www.rfc-editor.org/rfc/rfc6749.html#section-4.1.1">(Authorization Code Grant) Authentication Request</a> using the OpenID Provider's Metadata from the fetched configuration.</li>
+        <li>The Client sends the User to the OpenID Provider, using the prepared Authentication Request</li>
+        <li>The OpenID Provider <a href="https://openid.net/specs/openid-connect-core-1_0.html#Consent">asks the User to Authenticate, and provide Consent</a> for the Client to access (data on) their Solid Pod.</li>
+        <li>The OpenID Provider redirects the User back to a URL on the Client (the "callback" URL), with an <a href="https://www.rfc-editor.org/rfc/rfc6749.html#section-1.3.1">Authorization Code</a>.</li>
+        <li>The Client makes a request to the OpenID Provider's Token Endpoint (as described by the fetched OpenID Provider Metadata) using the Authorization Code received in the callback.</li>
+        <li>The OpenID Provider responds to the Client with an <a href="https://openid.net/specs/openid-connect-core-1_0.html#IDToken">ID Token</a>, an <a href="https://www.rfc-editor.org/rfc/rfc6749.html#section-1.4">Access Token</a>, and (optionally) a <a href="https://www.rfc-editor.org/rfc/rfc6749.html#section-1.5">Refresh Token</a>)</li>
+        <li>The Client <a href="https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation">validates the received ID token</a> and extracts the End-User's "Subject Identifier" (the Identifier of the User at the OpenID Provider, usually the WebId)</li>
+    </ul>
+    <li><a href="/oidc-protected-access/">Accessing a protected resource</a></li>
+    <ul>
+        <li>The Client uses the Access Token to request a protected Solid resources.</li>
+    </ul>
+    <li><a href="/oidc-offline-access/">Accessing a private resource without an online user</a></li>
+    <ul>
+    </ul>
 </ol>
 HTML;
 
@@ -116,11 +146,19 @@ HTML;
     break;
 
     case 'webid':
-        $response = require __DIR__ . '/example.01.webid.php';
+        $topic = '01.webid';
     break;
-
-    case 'oidc':
-        $response = require __DIR__ . '/example.02.oidc-discovery.php';
+    case 'oidc-discovery':
+        $topic = '02.oidc-discovery';
+    break;
+    case 'oidc-auth':
+        $topic = '03.oidc-auth';
+    break;
+    case 'oidc-protected-access':
+        $topic = '04.fetch-protected-resource';
+    break;
+    case 'oidc-offline-access':
+        $topic = '05.fetch-protected-resource-offline';
     break;
 
     default:
@@ -128,6 +166,10 @@ HTML;
         $context['description'] = 'Resource Not Found';
         $context['title'] = '404 Not Found';
     break;
+}
+
+if (isset($topic)) {
+    $response = require __DIR__ . "/example.$topic.php";
 }
 // =============================================================================
 

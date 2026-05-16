@@ -529,11 +529,18 @@ $storageLocation = __DIR__ . '/build/storage/';
 // -----------------------------------------------------------------------------
 $clientConfigFile = 'client_metadata.json';
 
+$clientServer = $request->getUri()->withFragment('')->withPath('')->withQuery('');
+$clientRedirectUri = $clientServer . '/oidc-offline-access/';
+
 $clientId = null;
-$clientName = 'MEENT Solid P1 Dongle Webhook';
-$clientRedirectUri = $request->getUri()->withFragment('')->withQuery('')->__toString();
-$clientRedirectUris = [$clientRedirectUri];
-$clientSecret = base64UrlEncode(random_bytes(32));
+$clientName = 'Solid Client Examples in PHP by Potherca';
+$clientRedirectUris = [
+    $clientRedirectUri,
+    $clientServer . '/oidc-auth/', // example.03.oidc-auth.php
+    $clientServer . '/oidc-offline-access/', // example.05.fetch-protected-resource-offline.php
+    $clientServer . '/oidc-protected-access/', // example.04.fetch-protected-resource.php
+];
+$clientSecret = 'my-client-secret';
 
 // -----------------------------------------------------------------------------
 $stateSigningKey = $clientSecret; // @TODO: Use separate secret (i.e. private key) for signing
@@ -609,9 +616,6 @@ if ($clientConfigFileExists) {
 $clientId = $clientConfig['client_id'] ?? $clientId;
 $clientName = $clientConfig['client_name'] ?? $clientName;
 $clientRedirectUris = $clientConfig['redirect_uris'] ?? $clientRedirectUris;
-$clientRedirectUri = is_array($clientRedirectUris) && $clientRedirectUris !== []
-    ? reset($clientRedirectUris)
-    : $clientRedirectUri;
 $clientSecret = $clientConfig['client_secret'] ?? $clientSecret;
 
 if (! $clientConfigFileExists) {
@@ -865,6 +869,7 @@ if (isset($client)) {
         // At this point there is a registered client, but it is not authenticated yet.
         // Step 2. Check if user is authenticated
         $authorizationRequestParams = [];
+        $authorizationRequestParams['redirect_uri'] = $clientRedirectUri;
 
         // Add Issuer URL as "state" value, so it can be retrieved after redirect
         $header = base64UrlEncode(json_encode(['alg' => 'HS256', 'typ' => 'JWT'], JSON_THROW_ON_ERROR));
@@ -1203,7 +1208,10 @@ if(isset($privateContainerUrl) && isset($client) && isset($issuerUrl) && isset($
     }
 
     if (! is_string($accessToken ?? null) || $accessToken === '') {
-        error('No valid access token available to fetch resource', 'Reconnect WebID to obtain consent/tokens.');
+        error(
+            'No valid access token available to fetch resource',
+            "<a href='?issuer=$issuerUrl'>Reconnect WebID</a> to obtain consent/tokens."
+        );
         exit;
     }
 
@@ -1211,7 +1219,6 @@ if(isset($privateContainerUrl) && isset($client) && isset($issuerUrl) && isset($
         'Authorization' => 'DPoP ' . $accessToken, // 'Accept' => 'text/turtle, application/ld+json',
     ]);
     $dpopProof = $dpopProofFactory->createProofForRequest($resourceRequest);
-    Session::current()->set('last_dpop_proof', $dpopProof);
 
     $resourceRequest = $resourceRequest->withHeader('DPoP', $dpopProof);
 
@@ -1224,6 +1231,12 @@ if(isset($privateContainerUrl) && isset($client) && isset($issuerUrl) && isset($
     }
 }
 // =============================================================================
+
+
+// Show post-redirect/token details only when access has actually been obtained.
+$hasGrantedAccess = $isRedirect
+    || (isset($accessToken) && is_string($accessToken) && $accessToken !== '')
+    || (isset($resourceBody) && is_string($resourceBody) && $resourceBody !== '');
 
 
 // =============================================================================
@@ -1255,13 +1268,12 @@ $content = vsprintf($homepage, [
         : '<em>(Not available without session)</em>',
     '%13$s ID Token Claims' => isset($idTokenClaims) ? var_export($idTokenClaims, true) : '',
     '%14$s Public DPoP JWK thumbprint' => $dpopProofFactory->getPublicJwkThumbprint(),
-    '%15$s Last DPoP proof' => Session::current()->get('last_dpop_proof') ?? '',
-
-    '%16$s PKCE' => $usePkce
+    '%15$s PKCE' => $usePkce
         ? 'enabled <code>'.($codeVerifier ?? Session::current()->get('pkce_code_verifier')).'</code> ✅'
         : 'disabled 📴',
-    '%17$s WebID URL' => $webIdUrl ?? '',
-    '%18$s Protected Resource' => $resourceBody ?? '',
+    '%16$s WebID URL' => $webIdUrl ?? '',
+    '%17$s Protected Resource' => $resourceBody ?? '',
+    '%18$s Post-Access Hidden' => $hasGrantedAccess ? '' : 'hidden',
 ]);
 $response->getBody()->write($content);
 // =============================================================================
@@ -1384,20 +1396,19 @@ __halt_compiler();<!doctype html>
                 <li class="redirectUri">
                     %11$s
                 </li>
-                <li>
+                <li %18$s>
                     ID Token claims %12$s
                     <pre><code>%13$s</code></pre>
                 </li>
-                <li>
+                <li %18$s>
                     <p>DPoP public JWK thumbprint (RFC7638) <code>%14$s</code></p>
-                    Last DPoP proof sent to token endpoint<pre><code>%15$s</code></pre>
                 </li>
-                <li>PKCE %16$s</li>
-                <li data-webid="%17$s">
-                    WebID <code>%17$s</code>
-                    <p>Use this WebID <a href="/oidc-offline-access-only/?webid=%17$s">in the Access a protected resource offline standalone Example</a></p>
+                <li %18$s>PKCE %15$s</li>
+                <li %18$s data-webid="%16$s">
+                    WebID <code>%16$s</code>
+                    <p>Open <a href="/oidc-offline-access/?webid=%16$s">this example</a> in an incognito/private window to see it work <em>without</em> a user session</p>
                 </li>
-                <li>Protected resource<pre><code>%18$s</code></pre></li>
+                <li %18$s>Protected resource<pre><code>%17$s</code></pre></li>
             </ol>
         </output>
     </section>

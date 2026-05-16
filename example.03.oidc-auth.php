@@ -418,6 +418,7 @@ $stateTtlSeconds = 300;
 // For certain issuers (like https://solidcommunity.net) PKCE is required, even for  server-to-server calls
 // @FIXME: Decide to either ALWAYS add PKCE, or only for know offenders and/or use PKCE as fallback on failing call.
 $usePkce = true;
+
 // -----------------------------------------------------------------------------
 $useCsrfCheck = true;
 // =============================================================================
@@ -469,12 +470,15 @@ $clientConfigFileExists = $filesystem->fileExists($clientConfigFile);
 if (! $clientConfigFileExists) {
     // Client metadata file not found, creating...
     $data = [
-        'client_id' => $clientId,
         'client_name' => $clientName,
         'client_secret' => $clientSecret,
         'redirect_uris' => $clientRedirectUris,
         'token_endpoint_auth_method' => 'client_secret_basic', // the auth method for the token endpoint
     ];
+
+    if (is_string($clientId) && $clientId !== '') {
+        $data['client_id'] = $clientId;
+    }
 
     $filesystem->write($clientConfigFile, json_encode($data,
         JSON_PRETTY_PRINT
@@ -602,6 +606,7 @@ if (isset($client)) {
     // At this point there is a registered client, but it is not authenticated yet.
     // Step 2. Check if user is authenticated
     $authorizationRequestParams = [];
+    $authorizationRequestParams['redirect_uri'] = $clientRedirectUri;
 
     // Add Issuer URL as "state" value, so it can be retrieved after redirect
     $header = base64UrlEncode(json_encode(['alg' => 'HS256', 'typ' => 'JWT'], JSON_THROW_ON_ERROR));
@@ -844,12 +849,11 @@ $content = vsprintf($homepage, [
         : '<em>(Not available without session)</em>',
     '%13$s ID Token Claims' => isset($idTokenClaims) ? var_export($idTokenClaims, true) : '',
     '%14$s Public DPoP JWK thumbprint' => $dpopProofFactory->getPublicJwkThumbprint(),
-    '%15$s Last DPoP proof' => Session::current()->get('last_dpop_proof') ?? '',
-
-    '%16$s PKCE' => $usePkce
+    '%15$s PKCE' => $usePkce
         ? 'enabled <code>'.($codeVerifier ?? Session::current()->get('pkce_code_verifier')).'</code> ✅'
         : 'disabled 📴',
-    '%17$s WebID URL' => $webIdUrl ?? '',
+    '%16$s WebID URL' => $webIdUrl ?? '',
+    '%17$s Post-Redirect Hidden' => $isRedirect ? '' : 'hidden',
 ]);
 $response->getBody()->write($content);
 // =============================================================================
@@ -972,18 +976,19 @@ __halt_compiler();<!doctype html>
                 <li class="redirectUri">
                     %11$s
                 </li>
-                <li>
+                <li %17$s>
                     ID Token claims %12$s
                     <pre><code>%13$s</code></pre>
                 </li>
-                <li>
+                <li %17$s>
                     <p>DPoP public JWK thumbprint (RFC7638) <code>%14$s</code></p>
-                    Last DPoP proof sent to token endpoint<pre><code>%15$s</code></pre>
                 </li>
-                <li>PKCE %16$s</li>
-                <li data-webid="%17$s">
-                    WebID <code>%17$s</code>
-                    <p>Use this WebID <a href="/oidc-protected-access/?webid=%17$s">in the Accessing a protected resource Example</a></p>
+                <li %17$s>PKCE %15$s</li>
+                <li %17$s data-webid="%16$s">
+                    WebID <code>%16$s</code>
+                </li>
+                <li %17$s>
+                    Use this issuer <a href="/oidc-protected-access/?issuer=%3$s">in the OIDC Authorization Code Flow Example to fetch a protected resource</a>
                 </li>
             </ol>
         </output>

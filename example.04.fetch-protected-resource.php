@@ -626,6 +626,7 @@ if (isset($client)) {
     // At this point there is a registered client, but it is not authenticated yet.
     // Step 2. Check if user is authenticated
     $authorizationRequestParams = [];
+    $authorizationRequestParams['redirect_uri'] = $clientRedirectUri;
 
     // Add Issuer URL as "state" value, so it can be retrieved after redirect
     $header = base64UrlEncode(json_encode(['alg' => 'HS256', 'typ' => 'JWT'], JSON_THROW_ON_ERROR));
@@ -905,7 +906,6 @@ if(isset($privateContainerUrl)) {
         'Authorization' => 'DPoP ' . $accessToken, // 'Accept' => 'text/turtle, application/ld+json',
     ]);
     $dpopProof = $dpopProofFactory->createProofForRequest($resourceRequest);
-    Session::current()->set('last_dpop_proof', $dpopProof);
 
     $resourceRequest = $resourceRequest->withHeader('DPoP', $dpopProof);
 
@@ -949,13 +949,12 @@ $content = vsprintf($homepage, [
         : '<em>(Not available without session)</em>',
     '%13$s ID Token Claims' => isset($idTokenClaims) ? var_export($idTokenClaims, true) : '',
     '%14$s Public DPoP JWK thumbprint' => $dpopProofFactory->getPublicJwkThumbprint(),
-    '%15$s Last DPoP proof' => Session::current()->get('last_dpop_proof') ?? '',
-
-    '%16$s PKCE' => $usePkce
+    '%15$s PKCE' => $usePkce
         ? 'enabled <code>'.($codeVerifier ?? Session::current()->get('pkce_code_verifier')).'</code> ✅'
         : 'disabled 📴',
-    '%17$s WebID URL' => $webIdUrl ?? '',
-    '%18$s Protected Resource' => $resourceBody ?? '',
+    '%16$s WebID URL' => $webIdUrl ?? '',
+    '%17$s Protected Resource' => $resourceBody ?? '',
+    '%18$s Post-Redirect Hidden' => $isRedirect ? '' : 'hidden',
 ]);
 $response->getBody()->write($content);
 // =============================================================================
@@ -1078,20 +1077,22 @@ __halt_compiler();<!doctype html>
                 <li class="redirectUri">
                     %11$s
                 </li>
-                <li>
+                <li %18$s>
                     ID Token claims %12$s
                     <pre><code>%13$s</code></pre>
                 </li>
-                <li>
+                <li %18$s>
                     <p>DPoP public JWK thumbprint (RFC7638) <code>%14$s</code></p>
-                    Last DPoP proof sent to token endpoint<pre><code>%15$s</code></pre>
                 </li>
-                <li>PKCE %16$s</li>
-                <li data-webid="%17$s">
-                    WebID <code>%17$s</code>
-                    <p>Use this WebID <a href="/oidc-offline-access/?webid=%17$s">in the Access a protected resource offline Example</a></p>
+                <li %18$s>PKCE %15$s</li>
+                <li %18$s data-webid="%16$s">
+                    WebID <code>%16$s</code>
+                    <p>Use this WebID <a href="/oidc-offline-access/?webid=%16$s">in the Access a protected resource offline Example</a></p>
                 </li>
-                <li>Protected resource<pre><code>%18$s</code></pre></li>
+                <li %18$s>Protected resource<pre><code>%17$s</code></pre></li>
+                <li %18$s>
+                    Use this issuer <a href="/oidc-offline-access/?issuer=%3$s">in the Access a protected resource offline Example</a>
+                </li>
             </ol>
         </output>
     </section>
