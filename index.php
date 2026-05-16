@@ -107,37 +107,70 @@ switch ($path) {
 
 <p>This project provides various examples related to accessing a protected resource on a <a href="https://solidproject.org/get_a_pod">Solid Pod</a></p>
 
+<h2>Full Flow</h2>
 <p>The full flow is:</p>
 
 <ol>
-    <li><a href="/webid/">Fetching a WebID Profile</a></li>
-    <ul>
-        <li>The User provides the Client (the "Relying Party") with a <a href="https://w3c-cg.github.io/WebID/spec/identity/">WebId</a> URL</li>
-        <li>The Client fetches the <a href="https://solid.github.io/webid-profile/">WebId Profile</a> from the provided URL</li>
-    </ul>
-    <li><a href="/oidc-discovery/">OpenID Connect (OIDC) issuer Discovery</a></li>
-    <ul>
-        <li>The Client extracts the OIDC Issuer URL (<code>http://www.w3.org/ns/solid/terms#oidcIssuer</code>) from the fetched WebId Profile</li>
-        <li>The Client fetches the <a href="https://openid.net/specs/openid-connect-discovery-1_0.html"> configuration of the OpenID Provider (the "Authorization Server")</a> from the discovery URL (<code>/.well-known/openid-configuration</code>) of the extracted OIDC Issuer URL</li>
-    </ul>
-    <li><a href="/oidc-auth/">OIDC Authorization Code Flow</a></li>
-    <ul>
-        <li>The Client prepares an <a href="https://www.rfc-editor.org/rfc/rfc6749.html#section-4.1.1">(Authorization Code Grant) Authentication Request</a> using the OpenID Provider's Metadata from the fetched configuration.</li>
-        <li>The Client sends the User to the OpenID Provider, using the prepared Authentication Request</li>
-        <li>The OpenID Provider <a href="https://openid.net/specs/openid-connect-core-1_0.html#Consent">asks the User to Authenticate, and provide Consent</a> for the Client to access (data on) their Solid Pod.</li>
-        <li>The OpenID Provider redirects the User back to a URL on the Client (the "callback" URL), with an <a href="https://www.rfc-editor.org/rfc/rfc6749.html#section-1.3.1">Authorization Code</a>.</li>
-        <li>The Client makes a request to the OpenID Provider's Token Endpoint (as described by the fetched OpenID Provider Metadata) using the Authorization Code received in the callback.</li>
-        <li>The OpenID Provider responds to the Client with an <a href="https://openid.net/specs/openid-connect-core-1_0.html#IDToken">ID Token</a>, an <a href="https://www.rfc-editor.org/rfc/rfc6749.html#section-1.4">Access Token</a>, and (optionally) a <a href="https://www.rfc-editor.org/rfc/rfc6749.html#section-1.5">Refresh Token</a>)</li>
-        <li>The Client <a href="https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation">validates the received ID token</a> and extracts the End-User's "Subject Identifier" (the Identifier of the User at the OpenID Provider, usually the WebId)</li>
-    </ul>
-    <li><a href="/oidc-protected-access/">Accessing a protected resource</a></li>
-    <ul>
-        <li>The Client uses the Access Token to request a protected Solid resources.</li>
-    </ul>
-    <li><a href="/oidc-offline-access/">Accessing a private resource without an online user</a></li>
-    <ul>
-    </ul>
+    <li>
+        <h3><a href="/webid/">Fetching a WebID Profile</a></h3>
+        <ul>
+            <li>The User provides the Client (the "Relying Party") with a <a href="https://w3c-cg.github.io/WebID/spec/identity/">WebId</a> URL</li>
+            <li>The Client fetches the <a href="https://solid.github.io/webid-profile/">WebId Profile</a> from the provided URL
+            </li>
+        </ul>
+        <p><img alt="Diagram of the WebId Profile fetching step" src="./diagrams/example.01.webid.svg" /></p>
+    </li>
+    <li><h3><a href="/oidc-discovery/">OpenID Connect (OIDC) issuer Discovery</a></h3>
+        <ul>
+            <li>The Client extracts the OIDC Issuer URL (<code>http://www.w3.org/ns/solid/terms#oidcIssuer</code>) from the fetched WebId Profile</li>
+            <li>The Client fetches the <a href="https://openid.net/specs/openid-connect-discovery-1_0.html">configuration of the OpenID Provider (the "Authorization Server")</a> from the discovery URL (<code>/.well-known/openid-configuration</code>) of the extracted OIDC Issuer URL</li>
+        </ul>
+        <p><img alt="Diagram of the OIDC Discovery step" src="./diagrams/example.02.oidc-discovery.svg" /></p>
+    </li>
+    <li><h3><a href="/oidc-auth/">OIDC Authorization Code Flow</a></h3>
+        <ul>
+            <li>The Client prepares an <a href="https://www.rfc-editor.org/rfc/rfc6749.html#section-4.1.1">(Authorization Code Grant) Authentication Request</a> using the OpenID Provider's Metadata from the fetched configuration.
+            </li>
+            <li>The Client includes a signed <code>state</code> value (for CSRF protection) and PKCE
+                (<code>code_challenge</code> and <code>code_challenge_method=S256</code>) in the authorization request.
+            </li>
+            <li>The Client sends the User to the OpenID Provider, using the prepared Authentication Request</li>
+            <li>The OpenID Provider <a href="https://openid.net/specs/openid-connect-core-1_0.html#Consent">asks the User to Authenticate, and provide Consent</a> for the Client to access (data on) their Solid Pod.</li>
+            <li>The OpenID Provider redirects the User back to a URL on the Client (the "callback" URL), with an <a href="https://www.rfc-editor.org/rfc/rfc6749.html#section-1.3.1">Authorization Code</a>.
+            </li>
+            <li>The Client validates the returned <code>state</code> and exchanges the Authorization Code at the token
+                endpoint using client authentication, PKCE <code>code_verifier</code>, and a DPoP proof.
+            </li>
+            <li>The Client makes a request to the OpenID Provider's Token Endpoint (as described by the fetched OpenID Provider Metadata) using the Authorization Code received in the callback.</li>
+            <li>The OpenID Provider responds to the Client with an <a href="https://openid.net/specs/openid-connect-core-1_0.html#IDToken">ID Token</a>, an <a href="https://www.rfc-editor.org/rfc/rfc6749.html#section-1.4">Access Token</a>, and (optionally) a <a href="https://www.rfc-editor.org/rfc/rfc6749.html#section-1.5">Refresh Token</a>)</li>
+            <li>The Client <a href="https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation">validates the received ID token</a> and extracts the End-User's "Subject Identifier" (the Identifier of the User at the OpenID Provider, usually the WebId)</li>
+        </ul>
+        <p><img alt="Diagram of the OIDC Authentication step" src="./diagrams/example.03.oidc-auth.svg" /></p>
+    </li>
+    <li><h3><a href="/oidc-protected-access/">Accessing a protected resource</a></h3>
+        <ul>
+            <li>The Client reads the authenticated WebID profile and determines the Pod storage location (for example <code>pim:storage</code> or <code>space:storage</code>), then derives a protected container URL (for example <code>/private/</code>).</li>
+            <li>The Client uses the DPoP-bound Access Token to request a protected Solid resource using <code>Authorization: DPoP &lt;access_token&gt;</code> and a <code>DPoP</code> proof header.</li>
+        </ul>
+        <p><img alt="Diagram of the protected resource access step" src="./diagrams/example.04.fetch-protected-resource.svg" /></p>
+    </li>
+    <li><h3><a href="/oidc-offline-access/">Accessing a private resource without an online user</a></h3>
+        <ul>
+            <li>After initial consent, the Client stores an offline grant (access token, refresh token, and expiry) for a given issuer and WebID.</li>
+            <li>When no user session is active, the Client reuses a still-valid access token or refreshes it with the refresh token at the token endpoint (with DPoP proof).</li>
+            <li>The Client can then fetch the protected Solid resource without an interactive login.
+            </li>
+        </ul>
+        <p><img alt="Diagram of the offline access step" src="./diagrams/example.05.fetch-protected-resource-offline.svg" /></p>
+    </li>
 </ol>
+
+<h2>Full Diagram</h2>
+
+<details><summary>Click to toggle full diagram</summary>
+    <p><img alt="Flow diagram of the authentication and protected resource access flow" src="./diagrams/flow.svg" /></p>
+</details>
+
 HTML;
 
         $context['description'] = 'Examples of how to call Solid Server APIs from PHP.';
