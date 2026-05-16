@@ -129,6 +129,8 @@ function error($reason, $message = '', $context = null)
         }
 
         $reason = exceptionToHtml($reason);
+    } else if (is_scalar($reason) === false) {
+        $reason = var_export($reason, true);
     }
 
     if ($context) {
@@ -403,6 +405,7 @@ $clientRedirectUri = $clientServer . '/oidc-auth/';
 $clientId = $clientServer . '/' . $clientConfigFile;
 $clientName = 'Solid Client Examples in PHP by Potherca';
 $clientRedirectUris = [
+    $clientRedirectUri,
     $clientServer . '/oidc-auth/', // example.03.oidc-auth.php
     $clientServer . '/oidc-offline-access/', // example.05.fetch-protected-resource-offline.php
     $clientServer . '/oidc-protected-access/', // example.04.fetch-protected-resource.php
@@ -412,6 +415,7 @@ $clientSecret = 'my-client-secret';
 // -----------------------------------------------------------------------------
 $stateSigningKey = $clientSecret; // @TODO: Use separate secret (i.e. private key) for signing
 $stateTtlSeconds = 300;
+
 // -----------------------------------------------------------------------------
 // For certain issuers (like https://solidcommunity.net) PKCE is required, even for  server-to-server calls
 // @FIXME: Decide to either ALWAYS add PKCE, or only for know offeders and/or use PKCE as fallback on failing call.
@@ -576,7 +580,7 @@ if (isset($issuer)) {
             exit;
         }
 
-        $fileContents = json_encode($registeredClaims, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT);
+        $fileContents = json_encode($registeredClaims, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         $filesystem->write($clientMetadataFile, $fileContents);
     }
 
@@ -609,7 +613,7 @@ if (isset($client)) {
     $signature = base64UrlEncode(hash_hmac('sha256', $header . '.' . $payload, $stateSigningKey, true));
     $state = $header . '.' . $payload . '.' . $signature;
 
-    if ($useCsrfCheck === true){
+    if ($useCsrfCheck === true) {
         Session::current()->set('oauth_state', $state);
     }
 
@@ -618,15 +622,15 @@ if (isset($client)) {
     if ($usePkce === true) {
         /*/ rfc7636 - PKCE - Section 4.1.  Client Creates a Code Verifier /*/
         $codeVerifier = base64UrlEncode(random_bytes(32));
-        if (! $isRedirect) {
-            Session::current()->set('pkce_code_verifier', $codeVerifier);
-        }
+        Session::current()->set('pkce_code_verifier', $codeVerifier);
+
         /*/ rfc7636 - PKCE - Section 4.2.  Client Creates the Code Challenge /*/
         $codeVerifierHash = hash('sha256', $codeVerifier, true);
         $codeChallenge = base64UrlEncode($codeVerifierHash);
+
         /*/ rfc7636 - PKCE - Section 4.3.  Client Sends the Code Challenge with the Authorization Request /*/
         $authorizationRequestParams['code_challenge'] = $codeChallenge;
-        $authorizationRequestParams['code_challenge_method'] = 'S256'; // RFC7636: clients capable of S256 MUST use S256.;
+        $authorizationRequestParams['code_challenge_method'] = 'S256'; // RFC7636: clients capable of S256 MUST use S256.
     }
 
     $redirectAuthorizationUri = $authorizationService->getAuthorizationUri($client, $authorizationRequestParams);
@@ -662,10 +666,12 @@ if ($isRedirect) {
     if ($useCsrfCheck === true) {
         $expectedState = Session::current()->get('oauth_state');
         if ($stateToken !== $expectedState) {
-            error('CSRF Check Failed. Received state does not match state stored in the session', [
-                'returned_state' => $stateToken,
-                'expected_state' => $expectedState,
-            ]);
+            error([
+                    'returned_state' => $stateToken,
+                    'expected_state' => $expectedState,
+                ],
+                'CSRF Check Failed. Received state does not match state stored in the session'
+            );
             exit;
         }
         Session::current()->remove('oauth_state');
