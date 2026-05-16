@@ -12,6 +12,7 @@ namespace Potherca\Examples\Solid;
 use EasyRdf\Graph;
 use EasyRdf\RdfNamespace;
 use EasyRdf\Resource;
+use Facile\JoseVerifier\JWK\JwksProviderBuilder;
 use Facile\OpenIDClient\AuthMethod\AuthMethodFactory;
 use Facile\OpenIDClient\AuthMethod\AuthMethodInterface;
 use Facile\OpenIDClient\AuthMethod\ClientSecretBasic;
@@ -39,6 +40,7 @@ use Jose\Component\Signature\Serializer\CompactSerializer;
 use Laminas\Diactoros\Response;
 use Laminas\Diactoros\ServerRequestFactory;
 use Psr\Http\Message\RequestInterface;
+use Psr\SimpleCache\CacheInterface;
 use SessionHandler;
 
 // =============================================================================
@@ -391,6 +393,31 @@ function decodeUnsafeJwt(string $jwt): array
 
     return $claims;
 }
+
+function saveOfflineGrant($session, $filesystem, $issuerHash)
+{
+    $snapshot = [
+        DpopProofFactory::SESSION_KEY => $session->get(DpopProofFactory::SESSION_KEY),
+        'saved_at' => time(),
+        'solid_access_token' => $session->get('solid_access_token'),
+        'solid_refresh_token' => $session->get('solid_refresh_token'),
+        'solid_resource_url' => $session->get('solid_resource_url'),
+        'solid_storage_root' => $session->get('solid_storage_root'),
+        'solid_token_expiry' => $session->get('solid_token_expiry'),
+        'solid_webid' => $session->get('solid_webid'),
+    ];
+
+    $grant = array_filter($snapshot, static function ($value): bool {
+        return $value !== null && $value !== '';
+    });
+
+    // @FIXME: This grant is issuer AND _webid_ specific. ADD WEBID!
+    $path = $issuerHash . '/offline-grant.json';
+    $encode = json_encode($grant, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+
+    $filesystem->write($path, $encode);
+}
+
 // =============================================================================
 
 
@@ -421,10 +448,14 @@ $stateTtlSeconds = 300;
 
 // -----------------------------------------------------------------------------
 // For certain issuers (like https://solidcommunity.net) PKCE is required, even for  server-to-server calls
-// @FIXME: Decide to either ALWAYS add PKCE, or only for know offeders and/or use PKCE as fallback on failing call.
+// @FIXME: Decide to either ALWAYS add PKCE, or only for know offenders and/or use PKCE as fallback on failing call.
 $usePkce = true;
+
 // -----------------------------------------------------------------------------
 $useCsrfCheck = true;
+
+// -----------------------------------------------------------------------------
+$useOfflineAccess = true;
 // =============================================================================
 
 
@@ -480,6 +511,12 @@ if (! $clientConfigFileExists) {
         'redirect_uris' => $clientRedirectUris,
         'token_endpoint_auth_method' => 'client_secret_basic', // the auth method for the token endpoint
     ];
+
+    if ($useOfflineAccess === true) {
+        // grant_types must include refresh_token to receive one (OIDC Core Section 11 / offline_access)
+        $data['grant_types'] = ['authorization_code', 'refresh_token'];
+        $data['scope'] = 'openid webid offline_access';
+    }
 
     $filesystem->write($clientConfigFile, json_encode($data,
         JSON_PRETTY_PRINT
@@ -541,6 +578,8 @@ if ($issuerUrl !== '' && filter_var($issuerUrl, FILTER_VALIDATE_URL)) {
 
 $showOutput = ! empty($webIdUrl) ||! empty($issuerUrl) || ! empty($issuerConfig) || $isRedirect;
 
+// @FIXME: There is a scenario where, if the page is opened with a __WebID__, and there has not yet been a consent call, we will get a 403!
+
 // RFC9449 - DPoP - Section 5.  DPoP Access Token Request
 // Initialise DPoP key pair (stored in session so the same key is reused across the redirect round-trip).
 if (
@@ -571,12 +610,66 @@ $methods = [
     new DpopAuthMethod(new SelfSignedTLSClientAuth(), $dpopProofFactory, $sessionHandler),
 ];
 unset($sessionHandler);
+// Initialise DPoP key pair (stored in session so the same key is reused across the redirect round-trip).
 $dpopAuthMethodFactory = new AuthMethodFactory($methods);
 
 $clientBuilder = new ClientBuilder();
 $clientBuilder = $clientBuilder
     ->setAuthMethodFactory($dpopAuthMethodFactory)
     ->setHttpClient($httpClient);
+
+if (! isset($issuer) && isset($webIdUrl) && filter_var($webIdUrl, FILTER_VALIDATE_URL)) {
+    // Grab Issuer from WebId Profile
+    if (! RdfNamespace::get('solid')) {
+        RdfNamespace::set('solid', 'http://www.w3.org/ns/solid/terms#');
+    }
+
+    $client = new Client();
+    $graph = new Graph();
+
+    $webIdResponse = $client->get($webIdUrl);
+    $content = $webIdResponse->getBody()->getContents();
+    $format = explode(';', $webIdResponse->getHeaderLine('Content-Type'))[0] ?? null;
+    $graph->parse($content, $format, $webIdUrl);
+
+
+    /* @KLUDGE: The provided WebID might be different from  what is present in the WebID Profile.
+     * If that is the case, there are a few options... The most prominent of which are that the Pod Provider
+     * expect the URL to have either `#me` at the end of the URL. So if th URL does no, we add it
+     */
+    if (! str_contains($webIdUrl, '#')) {
+        $webIdUrl .= '#me';
+    }
+
+    $profile = $graph->resource($webIdUrl);
+
+    $primaryTopic = $profile->primaryTopic();
+    if ($primaryTopic) {
+        $profile->primaryTopic();
+    }
+
+    $issuers = [];
+    if ($profile->hasProperty('solid:oidcIssuer')) {
+        $resources = $profile->allResources('solid:oidcIssuer');
+        $uris = array_map(static function (Resource $issuer) {return $issuer->getUri();}, $resources);
+        $issuers = array_unique($uris);
+    }
+
+    // @FIXME: If there is more than one issuer, the user should be able to choose which on to use
+    $issuerUrl = reset($issuers);
+
+    $issuerUrl = rtrim($issuerUrl, '/');
+    $openidDiscoveryUrl = $issuerUrl . '/.well-known/openid-configuration';
+    try {
+        $issuer = $issuerBuilder->build($openidDiscoveryUrl);
+    } catch (\Facile\OpenIDClient\Exception\ExceptionInterface $e) {
+        error($e, 'Failed to discover issuer metadata');
+        exit;
+    }
+
+    $issuerConfig = $issuer->getMetadata()->toArray();
+}
+
 
 if (isset($issuer)) {
     // Register client with the issuer (dynamic registration; cached per-issuer hash).
@@ -612,6 +705,45 @@ if (isset($issuer)) {
 
     $clientMetadata = ClientMetadata::fromArray($registeredClaims);
 
+    if ($useOfflineAccess === true) {
+        $offlineGrant = [];
+
+        $path = $issuerHash . '/offline-grant.json';
+
+        if ($filesystem->fileExists($path)) {
+            $contents = $filesystem->read($path);
+            $storedGrant = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
+
+            if (is_array($storedGrant)) {
+                $offlineGrant = $storedGrant;
+            }
+        }
+
+        if (
+            $offlineGrant !== []
+            && ! Session::current()->has('solid_refresh_token')
+            && ! Session::current()->has('solid_access_token')
+        ) {
+            foreach ([
+                'solid_access_token',
+                'solid_refresh_token',
+                'solid_resource_url',
+                'solid_storage_root',
+                'solid_token_expiry',
+                'solid_webid',
+            ] as $key) {
+                if (array_key_exists($key, $offlineGrant)) {
+                    Session::current()->set($key, $offlineGrant[$key]);
+                }
+            }
+
+            $sessionKey = DpopProofFactory::SESSION_KEY;
+            if (isset($offlineGrant[$sessionKey]) && is_array($offlineGrant[$sessionKey])) {
+                Session::current()->set($sessionKey, $offlineGrant[$sessionKey]);
+            }
+        }
+    }
+
     $clientBuilder = $clientBuilder
         ->setClientMetadata($clientMetadata)
         ->setIssuer($issuer)
@@ -628,41 +760,137 @@ $authorizationService = $authorizationServiceBuilder
 $offlineModeHandled = false;
 
 if (isset($client)) {
-    // At this point there is a registered client, but it is not authenticated yet.
-    // Step 2. Check if user is authenticated
-    $authorizationRequestParams = [];
+// if (! $isRedirect) === isset($issuer) === isset($client)
+    if ($useOfflineAccess === true) {
+        $persistedAccessToken = Session::current()->get('solid_access_token');
+        $persistedRefreshToken = Session::current()->get('solid_refresh_token');
+        $persistedExpiry = Session::current()->get('solid_token_expiry');
 
-    // Add Issuer URL as "state" value, so it can be retrieved after redirect
-    $header = base64UrlEncode(json_encode(['alg' => 'HS256', 'typ' => 'JWT'], JSON_THROW_ON_ERROR));
-    $payload = base64UrlEncode(json_encode([
-        'exp' => time() + $stateTtlSeconds,
-        'issr' => $issuerUrl,
-    ], JSON_THROW_ON_ERROR));
-    $signature = base64UrlEncode(hash_hmac('sha256', $header . '.' . $payload, $stateSigningKey, true));
-    $state = $header . '.' . $payload . '.' . $signature;
+        $hasReusableAccessToken = is_string($persistedAccessToken)
+            && $persistedAccessToken !== ''
+            && is_numeric($persistedExpiry)
+            && (int) $persistedExpiry > time() + 60;
 
-    if ($useCsrfCheck === true) {
-        Session::current()->set('oauth_state', $state);
+        $hasRefreshToken = is_string($persistedRefreshToken) && $persistedRefreshToken !== '';
+
+        if ($hasReusableAccessToken || $hasRefreshToken) {
+            echo '<h2>Offline mode: reuse previously granted consent</h2>';
+
+            $accessToken = null;
+            $idTokenClaims = [];
+
+            if ($hasReusableAccessToken) {
+                $accessToken = $persistedAccessToken;
+                // Reusing stored access token until', date('Y-m-d H:i:s', (int) $persistedExpiry));
+            } elseif ($hasRefreshToken) {
+                // Stored access token missing or expired; refreshing with the persisted refresh token.
+                try {
+                    $refreshedTokenSet = $authorizationService->refresh($client, $persistedRefreshToken);
+
+                    $accessToken = $refreshedTokenSet->getAccessToken();
+                    $expiresIn = $refreshedTokenSet->getExpiresIn();
+                    if ($expiresIn > 0) {
+                        $tokenExpiry = time() + $expiresIn;
+                    } else {
+                        $tokenExpiry = time() + 3600;
+                    }
+
+                    Session::current()->set('solid_access_token', $accessToken);
+                    Session::current()->set('solid_refresh_token', $refreshedTokenSet->getRefreshToken() ?: $persistedRefreshToken);
+                    Session::current()->set('solid_token_expiry', $tokenExpiry);
+
+                    $refreshedIdToken = $refreshedTokenSet->getIdToken();
+                    if (is_string($refreshedIdToken) && $refreshedIdToken !== '') {
+                        try {
+                            $idTokenClaims = (new IdTokenVerifierBuilder())->build($client)
+                                ->withAccessToken($accessToken)
+                                ->verify($refreshedIdToken);
+                        } catch (\Facile\JoseVerifier\Exception\ExceptionInterface $e) {
+                            $idTokenClaims = decodeUnsafeJwt($refreshedIdToken);
+                            // @KLUDGE: refreshed id_token verification failed: $e->getMessage(); continuing with unverified claims',
+                        }
+
+                        $refreshedWebId = $idTokenClaims['webid'] ?? $idTokenClaims['sub'] ?? null;
+                        if (is_string($refreshedWebId) && $refreshedWebId !== '') {
+                            Session::current()->set('solid_webid', $refreshedWebId);
+                        }
+                    }
+
+                    saveOfflineGrant(Session::current(), $filesystem, $issuerHash);
+                    // Refresh token exchange succeeded; offline consent is being reused.
+                } catch (\Facile\OpenIDClient\Exception\ExceptionInterface $e) {
+                    $path = $issuerHash . '/offline-grant.json';
+
+                    if ($filesystem->fileExists($path)) {
+                        $filesystem->delete($path);
+                    }
+
+                    foreach ([
+                        DpopProofFactory::SESSION_KEY,
+                        'solid_access_token',
+                        'solid_refresh_token',
+                        'solid_resource_url',
+                        'solid_storage_root',
+                        'solid_token_expiry',
+                        'solid_webid',
+                    ] as $key) {
+                        Session::current()->remove($key);
+                    }
+                    // @KLUDGE: Stored offline grant could not be refreshed: $e->getMessage(); falling back to interactive login
+                }
+            }
+
+            if (is_string($accessToken) && $accessToken !== '') {
+                saveOfflineGrant(Session::current(), $filesystem, $issuerHash);
+
+                $offlineModeHandled = true;
+            }
+        }
     }
 
-    $authorizationRequestParams['state'] = $state;
+    if ($offlineModeHandled === false) {
+        // At this point there is a registered client, but it is not authenticated yet.
+        // Step 2. Check if user is authenticated
+        $authorizationRequestParams = [];
 
-    if ($usePkce === true) {
-        /*/ rfc7636 - PKCE - Section 4.1.  Client Creates a Code Verifier /*/
-        // 32 random bytes base64url-encoded → 43-char verifier in the allowed unreserved set.
-        $codeVerifier = base64UrlEncode(random_bytes(32));
-        Session::current()->set('pkce_code_verifier', $codeVerifier);
+        // Add Issuer URL as "state" value, so it can be retrieved after redirect
+        $header = base64UrlEncode(json_encode(['alg' => 'HS256', 'typ' => 'JWT'], JSON_THROW_ON_ERROR));
+        $payload = base64UrlEncode(json_encode([
+            'exp' => time() + $stateTtlSeconds,
+            'issr' => $issuerUrl,
+        ], JSON_THROW_ON_ERROR));
+        $signature = base64UrlEncode(hash_hmac('sha256', $header . '.' . $payload, $stateSigningKey, true));
+        $state = $header . '.' . $payload . '.' . $signature;
 
-        /*/ rfc7636 - PKCE - Section 4.2.  Client Creates the Code Challenge /*/
-        $codeVerifierHash = hash('sha256', $codeVerifier, true);
-        $codeChallenge = base64UrlEncode($codeVerifierHash);
+        if ($useCsrfCheck === true) {
+            Session::current()->set('oauth_state', $state);
+        }
 
-        /*/ rfc7636 - PKCE - Section 4.3.  Client Sends the Code Challenge with the Authorization Request /*/
-        $authorizationRequestParams['code_challenge'] = $codeChallenge;
-        $authorizationRequestParams['code_challenge_method'] = 'S256'; // RFC7636: clients capable of S256 MUST use S256.
+        $authorizationRequestParams['state'] = $state;
+
+        if ($usePkce === true) {
+            /*/ rfc7636 - PKCE - Section 4.1.  Client Creates a Code Verifier /*/
+            // 32 random bytes base64url-encoded → 43-char verifier in the allowed unreserved set.
+            $codeVerifier = base64UrlEncode(random_bytes(32));
+            Session::current()->set('pkce_code_verifier', $codeVerifier);
+
+            /*/ rfc7636 - PKCE - Section 4.2.  Client Creates the Code Challenge /*/
+            $codeVerifierHash = hash('sha256', $codeVerifier, true);
+            $codeChallenge = base64UrlEncode($codeVerifierHash);
+
+            /*/ rfc7636 - PKCE - Section 4.3.  Client Sends the Code Challenge with the Authorization Request /*/
+            $authorizationRequestParams['code_challenge'] = $codeChallenge;
+            $authorizationRequestParams['code_challenge_method'] = 'S256'; // RFC7636: clients capable of S256 MUST use S256.
+
+            if ($useOfflineAccess === true) {
+                // offline_access requires explicit consent so the OP actually issues a refresh token (OIDC Core Section 11).
+                $authorizationRequestParams['prompt'] = 'consent';
+                $authorizationRequestParams['scope'] = 'openid webid offline_access';
+            }
+        }
+
+        $redirectAuthorizationUri = $authorizationService->getAuthorizationUri($client, $authorizationRequestParams);
     }
-
-    $redirectAuthorizationUri = $authorizationService->getAuthorizationUri($client, $authorizationRequestParams);
 }
 
 if ($isRedirect) {
@@ -845,60 +1073,82 @@ if ($isRedirect) {
     // Extract webid claim (Solid-OIDC Section 7, Section 8.1).
     $webIdUrl = $idTokenClaims['webid'] ?? $idTokenClaims['sub'] ?? null;
 
-    if ($webIdUrl && filter_var($webIdUrl, FILTER_VALIDATE_URL)) {
-        if (! RdfNamespace::get('pim')) {
-            RdfNamespace::set('pim', 'http://www.w3.org/ns/pim/space#');
-        }
+    // -------------------------------------------------------------------------
+    // Persist tokens for offline operation.
+    // Store refresh_token server-side in session; never expose to browser (OIDC Core Section 12).
+    if ($useOfflineAccess === true) {
+        $expiresIn = $tokenSet->getExpiresIn();
+        // @CHECKME: Not sure which should come first, the expiry form the token or from the id_token
+        if ($expiresIn > 0) {
+            $tokenExpiry = time() + $expiresIn;
+        } else {if (isset($idTokenClaims['exp']) && is_numeric($idTokenClaims['exp'])) {
+            $tokenExpiry = (int) $idTokenClaims['exp'];
+        } else {
+            $tokenExpiry = time() + 3600;
+        }}
 
-        if (! RdfNamespace::get('space')) {
-            RdfNamespace::set('space', 'http://www.w3.org/ns/pim/space#');
-        }
+        Session::current()->set('solid_access_token', $tokenSet->getAccessToken());
+        Session::current()->set('solid_refresh_token', $tokenSet->getRefreshToken());
+        Session::current()->set('solid_token_expiry', $tokenExpiry);
+        Session::current()->set('solid_webid', $webIdUrl);
 
-        // Parse the WebID Profile
-        $graph = new Graph();
+        saveOfflineGrant(Session::current(), $filesystem, $issuerHash);
+    }
+}
 
-        $webIdResponse = $httpClient->get($webIdUrl);
-        $content = $webIdResponse->getBody()->getContents();
+if ($webIdUrl && filter_var($webIdUrl, FILTER_VALIDATE_URL)) {
+    if (! RdfNamespace::get('pim')) {
+        RdfNamespace::set('pim', 'http://www.w3.org/ns/pim/space#');
+    }
 
-        $format = explode(';', $webIdResponse->getHeaderLine('Content-Type'))[0] ?? null;
-        $graph->parse($content, $format, $webIdUrl);
+    if (! RdfNamespace::get('space')) {
+        RdfNamespace::set('space', 'http://www.w3.org/ns/pim/space#');
+    }
 
-        // @CHECKME: The original PoC also checked for WebID URL without the hash:
-        //           $profileDocumentUrl = explode('#', $webId, 2)[0];
-        //           Is that needed/expected?
-        $profile = $graph->resource($webIdUrl);
+    // Parse the WebID Profile
+    $graph = new Graph();
 
-        // Grab the storage root URL from the WebID Profile
-        // @NOTE: There can be more than one Storage URI
-        $property = null;
+    $webIdResponse = $httpClient->get($webIdUrl);
+    $content = $webIdResponse->getBody()->getContents();
 
-        $primaryTopic = $profile->primaryTopic();
-        if ($primaryTopic) {
-            $profile = $primaryTopic;
-        }
+    $format = explode(';', $webIdResponse->getHeaderLine('Content-Type'))[0] ?? null;
+    $graph->parse($content, $format, $webIdUrl);
 
-        if ($profile->hasProperty('pim:storage')) {
-            $property = 'pim:storage';
-        }
+    // @CHECKME: The original PoC also checked for WebID URL without the hash:
+    //           $profileDocumentUrl = explode('#', $webId, 2)[0];
+    //           Is that needed/expected?
+    $profile = $graph->resource($webIdUrl);
 
-        if ($profile->hasProperty('space:storage')) {
-            $property = 'space:storage';
-        }
+    // Grab the storage root URL from the WebID Profile
+    // @NOTE: There can be more than one Storage URI
+    $property = null;
 
-        if ($property) {
-            $resources = $profile->allResources($property);
-            $uris = array_map(static function (Resource $issuer) {
-                return $issuer->getUri();
-            }, $resources);
-            $storageUrls = array_unique($uris);
+    $primaryTopic = $profile->primaryTopic();
+    if ($primaryTopic) {
+        $profile = $primaryTopic;
+    }
 
-            if ($storageUrls !== []) {
-                // @NOTE: The first storage URL is used for the demo, for production this is not correct behavior
-                $storageUrl = reset($storageUrls);
+    if ($profile->hasProperty('pim:storage')) {
+        $property = 'pim:storage';
+    }
 
-                if (filter_var($storageUrl, FILTER_VALIDATE_URL)) {
-                    $privateContainerUrl = rtrim($storageUrl, '/') . '/private/';
-                }
+    if ($profile->hasProperty('space:storage')) {
+        $property = 'space:storage';
+    }
+
+    if ($property) {
+        $resources = $profile->allResources($property);
+        $uris = array_map(static function (Resource $issuer) {
+            return $issuer->getUri();
+        }, $resources);
+        $storageUrls = array_unique($uris);
+
+        if ($storageUrls !== []) {
+            // @NOTE: The first storage URL is used for the demo, for production this is not correct behavior
+            $storageUrl = reset($storageUrls);
+
+            if (filter_var($storageUrl, FILTER_VALIDATE_URL)) {
+                $privateContainerUrl = rtrim($storageUrl, '/') . '/private/';
             }
         }
     }
