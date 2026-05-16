@@ -59,7 +59,21 @@ if ($webIdUrl) {
         $format = explode(';', $webIdResponse->getHeaderLine('Content-Type'))[0] ?? null;
         $graph->parse($content, $format, $webIdUrl);
 
+
+        /* @KLUDGE: The provided WebID might be different from  what is present in the WebID Profile.
+         * If that is the case, there are a few options... The most prominent of which are that the Pod Provider
+         * expect the URL to have either `#me` at the end of the URL. So if the URL does not, we add it
+         */
+        if (! str_contains($webIdUrl, '#')) {
+            $webIdUrl .= '#me';
+        }
+
         $profile = $graph->resource($webIdUrl);
+
+        $primaryTopic = $profile->primaryTopic();
+        if ($primaryTopic) {
+            $profile = $primaryTopic;
+        }
 
         $issuers = [];
 

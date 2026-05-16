@@ -400,7 +400,7 @@ function decodeUnsafeJwt(string $jwt): array
 $storageLocation = __DIR__ . '/build/storage/';
 
 // -----------------------------------------------------------------------------
-$clientConfigFile = 'client_id.json';
+$clientConfigFile = 'client_metadata.json';
 
 $clientServer = $request->getUri()->withFragment('')->withPath('')->withQuery('');
 $clientRedirectUri = $clientServer . '/oidc-protected-access/';
@@ -421,7 +421,7 @@ $stateTtlSeconds = 300;
 
 // -----------------------------------------------------------------------------
 // For certain issuers (like https://solidcommunity.net) PKCE is required, even for  server-to-server calls
-// @FIXME: Decide to either ALWAYS add PKCE, or only for know offeders and/or use PKCE as fallback on failing call.
+// @FIXME: Decide to either ALWAYS add PKCE, or only for know offenders and/or use PKCE as fallback on failing call.
 $usePkce = true;
 // -----------------------------------------------------------------------------
 $useCsrfCheck = true;
@@ -482,7 +482,7 @@ if (! $clientConfigFileExists) {
     ];
 
     $filesystem->write($clientConfigFile, json_encode($data,
-          JSON_PRETTY_PRINT
+        JSON_PRETTY_PRINT
         | JSON_THROW_ON_ERROR
         | JSON_UNESCAPED_SLASHES // Don't escape slashes `/`.
     ));
@@ -600,7 +600,8 @@ if (isset($issuer)) {
             exit;
         }
 
-        $fileContents = json_encode($registeredClaims, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        $fileContents = json_encode($registeredClaims,
+            JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         $filesystem->write($clientMetadataFile, $fileContents);
     }
 
@@ -691,7 +692,7 @@ if ($isRedirect) {
                     'returned_state' => $stateToken,
                     'expected_state' => $expectedState,
                 ],
-                'CSRF Check Failed. Received state does not match state stored in the session'
+                'CSRF Check Failed. Received state does not match state stored in the session', $request->getQueryParams()
             );
             exit;
         }
@@ -806,7 +807,6 @@ if ($isRedirect) {
 
     $idTokenVerified = false;
     $idToken = $tokenSet->getIdToken(); // Unencrypted id_token, if returned
-    $accessToken = $tokenSet->getAccessToken(); // Access token, if returned
 
     // Validate ID Token and bind identity to Solid rules.
     //   - Perform OIDC ID Token validation (iss, aud, exp, signature/JWKs) (OIDC Core Section 3.1.3.7).
@@ -815,6 +815,7 @@ if ($isRedirect) {
         try {
             $verifier = (new IdTokenVerifierBuilder())->build($client);
 
+            $accessToken = $tokenSet->getAccessToken(); // Access token, if returned
             if (is_string($accessToken) && $accessToken !== '') {
                 $verifier = $verifier->withAccessToken($accessToken);
             }

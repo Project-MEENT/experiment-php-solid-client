@@ -427,7 +427,7 @@ function saveOfflineGrant($session, $filesystem, $issuerHash)
 $storageLocation = __DIR__ . '/build/storage/';
 
 // -----------------------------------------------------------------------------
-$clientConfigFile = 'client_id.json';
+$clientConfigFile = 'client_metadata.json';
 
 $clientServer = $request->getUri()->withFragment('')->withPath('')->withQuery('');
 $clientRedirectUri = $clientServer . '/oidc-offline-access/';
@@ -645,13 +645,15 @@ if (! isset($issuer) && isset($webIdUrl) && filter_var($webIdUrl, FILTER_VALIDAT
 
     $primaryTopic = $profile->primaryTopic();
     if ($primaryTopic) {
-        $profile->primaryTopic();
+        $profile = $primaryTopic;
     }
 
     $issuers = [];
     if ($profile->hasProperty('solid:oidcIssuer')) {
         $resources = $profile->allResources('solid:oidcIssuer');
-        $uris = array_map(static function (Resource $issuer) {return $issuer->getUri();}, $resources);
+        $uris = array_map(static function (Resource $issuer) {
+            return $issuer->getUri();
+        }, $resources);
         $issuers = array_unique($uris);
     }
 
@@ -699,7 +701,8 @@ if (isset($issuer)) {
             exit;
         }
 
-        $fileContents = json_encode($registeredClaims, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        $fileContents = json_encode($registeredClaims,
+            JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         $filesystem->write($clientMetadataFile, $fileContents);
     }
 
@@ -1081,11 +1084,11 @@ if ($isRedirect) {
         // @CHECKME: Not sure which should come first, the expiry form the token or from the id_token
         if ($expiresIn > 0) {
             $tokenExpiry = time() + $expiresIn;
-        } else {if (isset($idTokenClaims['exp']) && is_numeric($idTokenClaims['exp'])) {
+        } elseif (isset($idTokenClaims['exp']) && is_numeric($idTokenClaims['exp'])) {
             $tokenExpiry = (int) $idTokenClaims['exp'];
         } else {
             $tokenExpiry = time() + 3600;
-        }}
+        }
 
         Session::current()->set('solid_access_token', $tokenSet->getAccessToken());
         Session::current()->set('solid_refresh_token', $tokenSet->getRefreshToken());
