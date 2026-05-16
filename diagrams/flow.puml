@@ -1,0 +1,15 @@
+@startuml
+
+!include_once actors.puml
+
+== Flows ==
+
+!include example.01.webid.puml
+!include example.02.oidc-discovery.puml
+!include example.03.oidc-auth.puml
+!include example.04.fetch-protected-resource.puml
+!include example.05.fetch-protected-resource-offline.puml
+
+title Solid\nOpenID Connect (OIDC)\nAuthorization Code Flow
+
+@enduml

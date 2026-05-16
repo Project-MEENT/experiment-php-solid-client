@@ -1,0 +1,22 @@
+@startuml
+
+!include_once style.iuml
+
+== Actors ==
+
+actor User as user
+
+participant "Client\n(Relying Party)" as app #white
+
+box Solid #784AF788
+    participant "Identity Provider\n(OIDC Issuer)\n(Authorization Server)" as solid.idp
+    participant "Storage Provider\n(Pod)\n(Resource Server)" as solid.pod
+end box
+
+user o--> app
+user o--> solid.idp
+
+app o--> solid.idp
+app o--> solid.pod
+
+@enduml

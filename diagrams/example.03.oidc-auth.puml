@@ -1,0 +1,57 @@
+@startuml
+
+title Solid\nOpenID Connect (OIDC)\nAuthorization Code Flow - Example 3
+
+!include_once actors.puml
+
+== Flows ==
+
+group OIDC Authorization Code Flow (Example 3)
+    autonumber 3.0.1
+    opt Dynamic Client Registration
+        app -> solid.idp: Register client metadata\n(redirect_uris, auth method, etc.)
+
+        activate solid.idp
+            solid.idp --> app: Respond with client_id\n(optional client_secret)
+        deactivate solid.idp
+    end
+
+    group Authorization Request
+        autonumber 3.1.1
+
+        app -> app: Build authorization request\n(client_id, redirect_uri, scope, state, code_challenge, code_challenge_method=S256)
+
+        app -> user: Redirect to authorization endpoint
+    deactivate app
+    activate user
+        user -> solid.idp: Request Authorization endpoint
+
+        activate solid.idp
+            user <-- solid.idp: Respond with request for Authentication and Consent
+        deactivate solid.idp
+
+        user --> solid.idp: Respond with Credentials and Consent
+    deactivate user
+
+    activate solid.idp
+        app <-- solid.idp: Respond with redirect\n(callback with code and state)
+    deactivate solid.idp
+
+    activate app
+        app -> app: Verify callback state\n(CSRF + signed state claims)
+    end
+
+    group Token Request
+        autonumber 3.2.1
+
+        app -> solid.idp: Request tokens\n(POST code, redirect_uri, code_verifier, client authentication, DPoP proof)
+
+        activate solid.idp
+            solid.idp --> app: Respond with tokens\n(id_token, DPoP access_token, optional refresh_token)
+        deactivate solid.idp
+
+        app -> app: Validate ID token\n(signature and iss/aud/exp claims)
+    end
+end group
+
+@enduml

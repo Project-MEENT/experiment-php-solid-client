@@ -1,0 +1,28 @@
+<style>
+    actor {
+        BackgroundColor transparent
+        lineColor #784AF788
+        lineThickness 2.5
+    }
+
+    arrow {
+        lineColor #666
+        lineThickness 1.5
+    }
+
+    group {
+        BackgroundColor #ffffff88
+    }
+
+    participant {
+        BackgroundColor #784AF788
+    }
+</style>
+
+skinparam {
+    defaultTextAlignment center
+
+    sequenceLifeLine {
+        backgroundColor #784AF788
+    }
+}

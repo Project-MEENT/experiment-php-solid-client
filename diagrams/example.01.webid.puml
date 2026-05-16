@@ -1,0 +1,25 @@
+@startuml
+
+title Solid\nOpenID Connect (OIDC)\nAuthorization Code Flow - Example 1
+
+!include_once actors.puml
+
+== Flows ==
+
+alt User provides WebID
+group Fetch WebID Profile (Example 1)
+    autonumber 1.1
+    user o-> app: Provide WebID URL
+    activate app
+        app -> solid.idp: Request WebID URL
+
+        activate solid.idp
+            app <-- solid.idp: Respond with Profile document
+        deactivate solid.idp
+        app -> app: Extract ""solid:oidcIssuer""
+end group
+else User Provides Issuer
+    user o-> app: Provide Issuer URL
+end
+
+@enduml

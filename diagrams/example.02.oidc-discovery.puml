@@ -1,0 +1,19 @@
+@startuml
+
+title Solid\nOpenID Connect (OIDC)\nAuthorization Code Flow - Example 2
+
+!include_once actors.puml
+
+== Flows ==
+
+group OpenID Connect (OIDC) issuer Discovery (Example 2)
+    autonumber 2.1
+
+        app -> solid.idp: Request /.well-known/openid-configuration
+
+        activate solid.idp
+            app <-- solid.idp: Respond with metadata\n(authorization_endpoint, token_endpoint, jwks_uri)
+        deactivate solid.idp
+end group
+
+@enduml

@@ -1,0 +1,31 @@
+@startuml
+
+title Solid\nOpenID Connect (OIDC)\nAuthorization Code Flow - Example 5
+
+!include_once actors.puml
+
+== Flows ==
+
+group Offline Access (Example 5)
+    autonumber 5.1
+    opt No active user session
+        app -> app: Load stored offline grant\n(access_token, refresh_token, expiry)
+
+        alt Access token expired
+            app -> solid.idp: Refresh token request\n(grant_type=refresh_token, DPoP proof)
+            activate solid.idp
+                solid.idp --> app: Respond with refreshed tokens
+            deactivate solid.idp
+            app -> app: Persist refreshed offline grant
+        else Access token still valid
+            app -> app: Reuse stored access token
+        end
+
+        app -> solid.pod: Request protected resource\n(Authorization: DPoP {access_token}, DPoP: proof JWT)
+        activate solid.pod
+            solid.pod --> app: Respond with protected resource
+        deactivate solid.pod
+    end
+end group
+
+@enduml

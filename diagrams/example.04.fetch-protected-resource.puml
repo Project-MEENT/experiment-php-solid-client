@@ -1,0 +1,25 @@
+@startuml
+
+title Solid\nOpenID Connect (OIDC)\nAuthorization Code Flow - Example 4
+
+!include_once actors.puml
+
+== Flows ==
+
+group Access Protected Resource (Example 4)
+    autonumber 4.1
+        app -> solid.idp: Request WebID profile\n(lookup pim:storage / space:storage)
+        activate solid.idp
+            solid.idp --> app: Respond with storage root URL(s)
+        deactivate solid.idp
+
+        app -> app: Derive private container URL\n(e.g., {storage}/private/)
+
+        app -> solid.pod: Request protected resource\n(Authorization: DPoP {access_token}, DPoP: proof JWT)
+        activate solid.pod
+            solid.pod --> app: Respond with protected resource
+        deactivate solid.pod
+    deactivate app
+end group
+
+@enduml
