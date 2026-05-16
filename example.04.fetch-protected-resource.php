@@ -842,11 +842,16 @@ if ($isRedirect) {
             RdfNamespace::set('pim', 'http://www.w3.org/ns/pim/space#');
         }
 
+        if (! RdfNamespace::get('space')) {
+            RdfNamespace::set('space', 'http://www.w3.org/ns/pim/space#');
+        }
+
         // Parse the WebID Profile
         $graph = new Graph();
 
         $webIdResponse = $httpClient->get($webIdUrl);
         $content = $webIdResponse->getBody()->getContents();
+
         $format = explode(';', $webIdResponse->getHeaderLine('Content-Type'))[0] ?? null;
         $graph->parse($content, $format, $webIdUrl);
 
@@ -857,8 +862,23 @@ if ($isRedirect) {
 
         // Grab the storage root URL from the WebID Profile
         // @NOTE: There can be more than one Storage URI
+        $property = null;
+
+        $primaryTopic = $profile->primaryTopic();
+        if ($primaryTopic) {
+            $profile = $primaryTopic;
+        }
+
         if ($profile->hasProperty('pim:storage')) {
-            $resources = $profile->allResources('pim:storage');
+            $property = 'pim:storage';
+        }
+
+        if ($profile->hasProperty('space:storage')) {
+            $property = 'space:storage';
+        }
+
+        if ($property) {
+            $resources = $profile->allResources($property);
             $uris = array_map(static function (Resource $issuer) {
                 return $issuer->getUri();
             }, $resources);
