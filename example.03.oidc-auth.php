@@ -273,8 +273,7 @@ final class DpopAuthMethod implements AuthMethodInterface
 {
     public function __construct(
         private AuthMethodInterface $authMethod,
-        private DpopProofFactory $dpopProofFactory,
-        private Session $sessionStore
+        private DpopProofFactory $dpopProofFactory
     ) {}
 
     public function getSupportedMethod(): string
@@ -287,7 +286,6 @@ final class DpopAuthMethod implements AuthMethodInterface
         $request = $this->authMethod->createRequest($request, $client, $claims);
 
         $dpopProof = $this->dpopProofFactory->createProofForRequest($request);
-        $this->sessionStore->set('last_dpop_proof', $dpopProof);
 
         return $request->withHeader('DPoP', $dpopProof);
     }
@@ -517,15 +515,17 @@ if ($issuerUrl !== '' && filter_var($issuerUrl, FILTER_VALIDATE_URL)) {
 $showOutput = ! empty($issuerUrl) || ! empty($issuerConfig) || $isRedirect;
 
 // RFC9449 - DPoP - Section 5.  DPoP Access Token Request
-// Initialise DPoP key pair (stored in session so the same key is reused across the redirect round-trip).
-if (
-    ! Session::current()->has(DpopProofFactory::SESSION_KEY)
-    || ! is_array(Session::current()->get(DpopProofFactory::SESSION_KEY))
-    || ! isset(Session::current()->get(DpopProofFactory::SESSION_KEY)['kty'])) {
+// Initialise DPoP key pair (persisted to disk so the same key is reused across requests).
+$dpopJwkFile = rtrim($storageLocation, '/') . '/dpop_jwk.json';
+if (file_exists($dpopJwkFile)) {
+    $jwkData = json_decode(file_get_contents($dpopJwkFile), true, 512, JSON_THROW_ON_ERROR);
+}
+
+if (! isset($jwkData) || ! is_array($jwkData) || ! isset($jwkData['kty'])) {
     $jwk = JWKFactory::createECKey('P-256');
-    Session::current()->set(DpopProofFactory::SESSION_KEY, $jwk->all());
+    file_put_contents($dpopJwkFile, json_encode($jwk->all(), JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
 } else {
-    $jwk = new JWK(Session::current()->get(DpopProofFactory::SESSION_KEY));
+    $jwk = new JWK($jwkData);
 }
 
 $dpopProofFactory = new DpopProofFactory(
@@ -535,17 +535,15 @@ $dpopProofFactory = new DpopProofFactory(
 );
 
 /*/ RFC9449 - DPoP - Section 5: DPoP proof is injected automatically by DpopAuthMethod /*/
-$sessionHandler = Session::current();
 $methods = [
-    new DpopAuthMethod(new ClientSecretBasic(), $dpopProofFactory, $sessionHandler),
-    new DpopAuthMethod(new ClientSecretJwt(), $dpopProofFactory, $sessionHandler),
-    new DpopAuthMethod(new ClientSecretPost(), $dpopProofFactory, $sessionHandler),
-    new DpopAuthMethod(new None(), $dpopProofFactory, $sessionHandler),
-    new DpopAuthMethod(new PrivateKeyJwt(), $dpopProofFactory, $sessionHandler),
-    new DpopAuthMethod(new TLSClientAuth(), $dpopProofFactory, $sessionHandler),
-    new DpopAuthMethod(new SelfSignedTLSClientAuth(), $dpopProofFactory, $sessionHandler),
+    new DpopAuthMethod(new ClientSecretBasic(), $dpopProofFactory),
+    new DpopAuthMethod(new ClientSecretJwt(), $dpopProofFactory),
+    new DpopAuthMethod(new ClientSecretPost(), $dpopProofFactory),
+    new DpopAuthMethod(new None(), $dpopProofFactory),
+    new DpopAuthMethod(new PrivateKeyJwt(), $dpopProofFactory),
+    new DpopAuthMethod(new TLSClientAuth(), $dpopProofFactory),
+    new DpopAuthMethod(new SelfSignedTLSClientAuth(), $dpopProofFactory),
 ];
-unset($sessionHandler);
 $dpopAuthMethodFactory = new AuthMethodFactory($methods);
 
 $clientBuilder = new ClientBuilder();
