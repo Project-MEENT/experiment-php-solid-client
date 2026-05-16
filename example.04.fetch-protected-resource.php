@@ -132,6 +132,8 @@ function error($reason, $message = '', $context = null)
         }
 
         $reason = exceptionToHtml($reason);
+    } else if (is_scalar($reason) === false) {
+        $reason = var_export($reason, true);
     }
 
     if ($context) {
