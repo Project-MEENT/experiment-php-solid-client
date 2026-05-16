@@ -417,6 +417,7 @@ $clientSecret = 'my-client-secret';
 // -----------------------------------------------------------------------------
 $stateSigningKey = $clientSecret; // @TODO: Use separate secret (i.e. private key) for signing
 $stateTtlSeconds = 300;
+
 // -----------------------------------------------------------------------------
 // For certain issuers (like https://solidcommunity.net) PKCE is required, even for  server-to-server calls
 // @FIXME: Decide to either ALWAYS add PKCE, or only for know offeders and/or use PKCE as fallback on failing call.
@@ -598,7 +599,7 @@ if (isset($issuer)) {
             exit;
         }
 
-        $fileContents = json_encode($registeredClaims, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT);
+        $fileContents = json_encode($registeredClaims, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         $filesystem->write($clientMetadataFile, $fileContents);
     }
 
@@ -631,7 +632,7 @@ if (isset($client)) {
     $signature = base64UrlEncode(hash_hmac('sha256', $header . '.' . $payload, $stateSigningKey, true));
     $state = $header . '.' . $payload . '.' . $signature;
 
-    if ($useCsrfCheck === true){
+    if ($useCsrfCheck === true) {
         Session::current()->set('oauth_state', $state);
     }
 
@@ -641,9 +642,7 @@ if (isset($client)) {
         /*/ rfc7636 - PKCE - Section 4.1.  Client Creates a Code Verifier /*/
         // 32 random bytes base64url-encoded → 43-char verifier in the allowed unreserved set.
         $codeVerifier = base64UrlEncode(random_bytes(32));
-        if (! $isRedirect) {
-            Session::current()->set('pkce_code_verifier', $codeVerifier);
-        }
+        Session::current()->set('pkce_code_verifier', $codeVerifier);
 
         /*/ rfc7636 - PKCE - Section 4.2.  Client Creates the Code Challenge /*/
         $codeVerifierHash = hash('sha256', $codeVerifier, true);
@@ -651,7 +650,7 @@ if (isset($client)) {
 
         /*/ rfc7636 - PKCE - Section 4.3.  Client Sends the Code Challenge with the Authorization Request /*/
         $authorizationRequestParams['code_challenge'] = $codeChallenge;
-        $authorizationRequestParams['code_challenge_method'] = 'S256'; // RFC7636: clients capable of S256 MUST use S256.;
+        $authorizationRequestParams['code_challenge_method'] = 'S256'; // RFC7636: clients capable of S256 MUST use S256.
     }
 
     $redirectAuthorizationUri = $authorizationService->getAuthorizationUri($client, $authorizationRequestParams);
@@ -687,10 +686,12 @@ if ($isRedirect) {
     if ($useCsrfCheck === true) {
         $expectedState = Session::current()->get('oauth_state');
         if ($stateToken !== $expectedState) {
-            error('CSRF Check Failed. Received state does not match state stored in the session', [
-                'returned_state' => $stateToken,
-                'expected_state' => $expectedState,
-            ]);
+            error([
+                    'returned_state' => $stateToken,
+                    'expected_state' => $expectedState,
+                ],
+                'CSRF Check Failed. Received state does not match state stored in the session'
+            );
             exit;
         }
         Session::current()->remove('oauth_state');
@@ -832,8 +833,6 @@ if ($isRedirect) {
         exit;
     }
 
-    $privateContainerUrl = null;
-
     // Extract webid claim (Solid-OIDC Section 7, Section 8.1).
     $webIdUrl = $idTokenClaims['webid'] ?? $idTokenClaims['sub'] ?? null;
 
@@ -885,7 +884,7 @@ if ($isRedirect) {
             $storageUrls = array_unique($uris);
 
             if ($storageUrls !== []) {
-                //@NOTE: The first storage URL is used for the demo, for production this is not correct behavior
+                // @NOTE: The first storage URL is used for the demo, for production this is not correct behavior
                 $storageUrl = reset($storageUrls);
 
                 if (filter_var($storageUrl, FILTER_VALIDATE_URL)) {
@@ -896,7 +895,7 @@ if ($isRedirect) {
     }
 }
 
-// As there is no "offline" access, this only works after we have been redirected from the Issuer
+// If there is no "offline" access, this only works after we have been redirected from the Issuer
 if(isset($privateContainerUrl)) {
     $resourceRequest = new \GuzzleHttp\Psr7\Request('GET', $privateContainerUrl, [
         'Authorization' => 'DPoP ' . $accessToken, // 'Accept' => 'text/turtle, application/ld+json',
